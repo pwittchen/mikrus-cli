@@ -1,3 +1,3 @@
 # mikrust
 
-mirkus + rust = mirkust 👉 mikrus vps cli written in rust
+mirkus + rust = mirkust 👉 [mikrus](https://mikr.us/) vps cli written in rust
