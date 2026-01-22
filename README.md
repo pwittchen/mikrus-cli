@@ -1,3 +1,3 @@
 # mikrus-cli
 
-[mikrus](https://mikr.us/) vps cli written in rust
+[mikrus](https://mikr.us/) VPS CLI written in Rust
