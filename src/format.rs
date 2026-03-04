@@ -221,6 +221,141 @@ fn format_generic_section(out: &mut String, key: &str, raw: &str, truncate_width
     }
 }
 
+/// Convert a snake_case key to a human-readable label: `server_id` → `Server Id`.
+fn humanize_key(key: &str) -> String {
+    if key.is_empty() {
+        return String::new();
+    }
+    key.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(c) => {
+                    let upper: String = c.to_uppercase().collect();
+                    format!("{upper}{}", chars.as_str())
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Render a JSON leaf value as a plain string.
+fn format_scalar(val: &Value) -> String {
+    match val {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => if *b { "Yes" } else { "No" }.to_string(),
+        Value::Null => "-".to_string(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+/// Render an object as aligned key-value pairs.
+fn format_object(map: &serde_json::Map<String, Value>, indent: usize) -> String {
+    let prefix = " ".repeat(indent);
+    let labels: Vec<String> = map.keys().map(|k| humanize_key(k)).collect();
+    let max_label = labels.iter().map(|l| l.len()).max().unwrap_or(0);
+
+    let mut out = String::new();
+    for (label, (_key, val)) in labels.iter().zip(map.iter()) {
+        match val {
+            Value::Object(inner) => {
+                out.push_str(&format!("{prefix}{label}:\n"));
+                out.push_str(&format_object(inner, indent + 2));
+            }
+            Value::Array(arr) => {
+                out.push_str(&format!("{prefix}{label}:\n"));
+                out.push_str(&format_array(arr, indent + 2));
+            }
+            _ => {
+                let value_str = format_scalar(val);
+                out.push_str(&format!(
+                    "{prefix}{:<width$}  {}\n",
+                    format!("{label}:"),
+                    value_str,
+                    width = max_label + 1
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Render an array as numbered entries (objects) or bulleted items (scalars).
+fn format_array(arr: &[Value], indent: usize) -> String {
+    let prefix = " ".repeat(indent);
+    if arr.is_empty() {
+        return format!("{prefix}(empty)\n");
+    }
+
+    let mut out = String::new();
+    let all_objects = arr.iter().all(|v| v.is_object());
+
+    if all_objects {
+        for (i, item) in arr.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let num_prefix = format!("{prefix}{}. ", i + 1);
+            if let Value::Object(map) = item {
+                let inner = format_object(map, 0);
+                for (j, line) in inner.lines().enumerate() {
+                    if j == 0 {
+                        out.push_str(&format!("{num_prefix}{line}\n"));
+                    } else {
+                        out.push_str(&format!(
+                            "{}{line}\n",
+                            " ".repeat(num_prefix.len())
+                        ));
+                    }
+                }
+            }
+        }
+    } else {
+        for item in arr {
+            out.push_str(&format!("{prefix}- {}\n", format_scalar(item)));
+        }
+    }
+    out
+}
+
+/// Format a JSON API response as human-readable text.
+///
+/// Special cases:
+/// - `exec` command: if the response has an `"output"` key, print just that value.
+/// - Otherwise delegates to the appropriate renderer based on JSON type.
+pub fn format_value(value: &Value, command: &str) -> String {
+    // Special case: exec command with "output" key
+    if command == "exec" {
+        if let Value::Object(map) = value {
+            if let Some(output) = map.get("output") {
+                let text = format_scalar(output);
+                // Trim trailing whitespace but ensure trailing newline
+                let trimmed = text.trim_end();
+                if trimmed.is_empty() {
+                    return String::new();
+                }
+                return format!("{trimmed}\n");
+            }
+        }
+    }
+
+    match value {
+        Value::Object(map) => format_object(map, 0),
+        Value::Array(arr) => format_array(arr, 0),
+        _ => {
+            let s = format_scalar(value);
+            if s.is_empty() {
+                s
+            } else {
+                format!("{s}\n")
+            }
+        }
+    }
+}
+
 /// Format the stats API response as a human-readable string.
 /// If `truncate_width` is non-zero, long lines are cut and end with "...".
 pub fn format_stats(value: &Value, truncate_width: usize) -> String {
@@ -600,5 +735,143 @@ root         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
         assert!(is_shell_noise("  sh: 1: echo  "));
         assert!(!is_shell_noise("root 1 /sbin/init"));
         assert!(!is_shell_noise("USER PID"));
+    }
+
+    // --- Tests for generic formatting functions ---
+
+    #[test]
+    fn test_humanize_key_snake_case() {
+        assert_eq!(humanize_key("server_id"), "Server Id");
+    }
+
+    #[test]
+    fn test_humanize_key_single_word() {
+        assert_eq!(humanize_key("name"), "Name");
+    }
+
+    #[test]
+    fn test_humanize_key_empty() {
+        assert_eq!(humanize_key(""), "");
+    }
+
+    #[test]
+    fn test_humanize_key_multi_underscore() {
+        assert_eq!(humanize_key("last_login_date"), "Last Login Date");
+    }
+
+    #[test]
+    fn test_format_scalar_string() {
+        assert_eq!(format_scalar(&json!("hello")), "hello");
+    }
+
+    #[test]
+    fn test_format_scalar_number() {
+        assert_eq!(format_scalar(&json!(42)), "42");
+    }
+
+    #[test]
+    fn test_format_scalar_bool() {
+        assert_eq!(format_scalar(&json!(true)), "Yes");
+        assert_eq!(format_scalar(&json!(false)), "No");
+    }
+
+    #[test]
+    fn test_format_scalar_null() {
+        assert_eq!(format_scalar(&json!(null)), "-");
+    }
+
+    #[test]
+    fn test_format_value_flat_object() {
+        let val = json!({"server_id": "12345", "ram": "256MB"});
+        let output = format_value(&val, "info");
+        assert!(output.contains("Server Id:"));
+        assert!(output.contains("12345"));
+        assert!(output.contains("Ram:"));
+        assert!(output.contains("256MB"));
+    }
+
+    #[test]
+    fn test_format_value_key_alignment() {
+        let val = json!({"id": "1", "server_name": "srv1"});
+        let output = format_value(&val, "info");
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2);
+        // Values should start at the same column (padding aligns them)
+        let value_positions: Vec<usize> = lines
+            .iter()
+            .map(|l| {
+                let colon = l.find(':').unwrap();
+                // After "Label:" there are spaces then the value
+                let after_colon = &l[colon + 1..];
+                let trimmed = after_colon.trim_start();
+                l.len() - after_colon.len() + (after_colon.len() - trimmed.len())
+            })
+            .collect();
+        assert_eq!(
+            value_positions[0], value_positions[1],
+            "values should be aligned: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn test_format_value_array_of_objects() {
+        let val = json!([
+            {"id": 1, "name": "srv1"},
+            {"id": 2, "name": "srv2"}
+        ]);
+        let output = format_value(&val, "servers");
+        assert!(output.contains("1."));
+        assert!(output.contains("2."));
+        assert!(output.contains("srv1"));
+        assert!(output.contains("srv2"));
+    }
+
+    #[test]
+    fn test_format_value_exec_special_case() {
+        let val = json!({"output": "up 10 days\n"});
+        let output = format_value(&val, "exec");
+        assert_eq!(output, "up 10 days\n");
+    }
+
+    #[test]
+    fn test_format_value_exec_no_output_key() {
+        let val = json!({"error": "command not found"});
+        let output = format_value(&val, "exec");
+        // Falls through to generic object formatting
+        assert!(output.contains("Error:"));
+        assert!(output.contains("command not found"));
+    }
+
+    #[test]
+    fn test_format_value_nested_object() {
+        let val = json!({"server": {"id": 1, "name": "srv1"}});
+        let output = format_value(&val, "info");
+        assert!(output.contains("Server:"));
+        assert!(output.contains("Id:"));
+        assert!(output.contains("srv1"));
+    }
+
+    #[test]
+    fn test_format_value_empty_array() {
+        let val = json!([]);
+        let output = format_value(&val, "servers");
+        assert!(output.contains("(empty)"));
+    }
+
+    #[test]
+    fn test_format_value_scalar_array() {
+        let val = json!(["one", "two", "three"]);
+        let output = format_value(&val, "test");
+        assert!(output.contains("- one"));
+        assert!(output.contains("- two"));
+        assert!(output.contains("- three"));
+    }
+
+    #[test]
+    fn test_format_value_plain_string() {
+        let val = json!("just a message");
+        let output = format_value(&val, "test");
+        assert_eq!(output, "just a message\n");
     }
 }

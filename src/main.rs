@@ -17,6 +17,10 @@ struct Cli {
     #[arg(long, env = "MIKRUS_KEY", global = true)]
     key: Option<String>,
 
+    /// Output raw JSON instead of formatted text
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -80,6 +84,20 @@ async fn main() -> Result<()> {
         _ => None,
     };
 
+    let command_name = match &cli.command {
+        Command::Info => "info",
+        Command::Servers => "servers",
+        Command::Restart => "restart",
+        Command::Logs { .. } => "logs",
+        Command::Amfetamina => "amfetamina",
+        Command::Db => "db",
+        Command::Exec { .. } => "exec",
+        Command::Stats { .. } => "stats",
+        Command::Ports => "ports",
+        Command::Cloud => "cloud",
+        Command::Domain { .. } => "domain",
+    };
+
     let result = match cli.command {
         Command::Info => client.info().await,
         Command::Servers => client.servers().await,
@@ -96,10 +114,12 @@ async fn main() -> Result<()> {
 
     match result {
         Ok(value) => {
-            if let Some(trunc) = truncate_width {
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            } else if let Some(trunc) = truncate_width {
                 print!("{}", format::format_stats(&value, trunc));
             } else {
-                println!("{}", serde_json::to_string_pretty(&value)?);
+                print!("{}", format::format_value(&value, command_name));
             }
         }
         Err(e) => {
@@ -193,5 +213,28 @@ mod tests {
     fn test_missing_subcommand() {
         let result = Cli::try_parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_json_flag() {
+        let cli = Cli::parse_from([
+            "mikrus", "--srv", "srv12345", "--key", "mykey", "--json", "info",
+        ]);
+        assert!(cli.json);
+        assert!(matches!(cli.command, Command::Info));
+    }
+
+    #[test]
+    fn test_parse_json_flag_default_false() {
+        let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey", "info"]);
+        assert!(!cli.json);
+    }
+
+    #[test]
+    fn test_parse_json_flag_after_subcommand() {
+        let cli = Cli::parse_from([
+            "mikrus", "--srv", "srv12345", "--key", "mykey", "info", "--json",
+        ]);
+        assert!(cli.json);
     }
 }
