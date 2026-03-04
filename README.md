@@ -27,6 +27,12 @@ cargo install --git https://github.com/pwittchen/mikrus-cli.git
 
 The binary will be installed to `~/.cargo/bin/mikrus-cli`.
 
+### Uninstallation
+
+```bash
+cargo uninstall mikrus-cli
+```
+
 ## Configuration
 
 Set your credentials via environment variables or pass them as flags:
