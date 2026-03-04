@@ -96,3 +96,68 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_parse_info_command() {
+        let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey", "info"]);
+        assert_eq!(cli.srv.unwrap(), "srv12345");
+        assert_eq!(cli.key.unwrap(), "mykey");
+        assert!(matches!(cli.command, Command::Info));
+    }
+
+    #[test]
+    fn test_parse_exec_command() {
+        let cli = Cli::parse_from([
+            "mikrus", "--srv", "srv12345", "--key", "mykey", "exec", "uptime",
+        ]);
+        match cli.command {
+            Command::Exec { cmd } => assert_eq!(cmd, "uptime"),
+            _ => panic!("expected Exec command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_domain_command() {
+        let cli = Cli::parse_from([
+            "mikrus", "--srv", "srv12345", "--key", "mykey", "domain", "8080", "example.com",
+        ]);
+        match cli.command {
+            Command::Domain { port, domain } => {
+                assert_eq!(port, "8080");
+                assert_eq!(domain, "example.com");
+            }
+            _ => panic!("expected Domain command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_logs_with_id() {
+        let cli = Cli::parse_from([
+            "mikrus", "--srv", "srv12345", "--key", "mykey", "logs", "42",
+        ]);
+        match cli.command {
+            Command::Logs { id } => assert_eq!(id.unwrap(), "42"),
+            _ => panic!("expected Logs command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_logs_without_id() {
+        let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey", "logs"]);
+        match cli.command {
+            Command::Logs { id } => assert!(id.is_none()),
+            _ => panic!("expected Logs command"),
+        }
+    }
+
+    #[test]
+    fn test_missing_subcommand() {
+        let result = Cli::try_parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey"]);
+        assert!(result.is_err());
+    }
+}
