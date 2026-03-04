@@ -1,4 +1,5 @@
 mod api;
+mod format;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -43,7 +44,11 @@ enum Command {
         cmd: String,
     },
     /// Show disk/memory/uptime statistics
-    Stats,
+    Stats {
+        /// Truncate long lines at this width, adding "..." (0 = no truncation)
+        #[arg(long, default_value_t = 0)]
+        truncate: usize,
+    },
     /// Show TCP/UDP ports
     Ports,
     /// Show cloud services & stats
@@ -70,6 +75,11 @@ async fn main() -> Result<()> {
 
     let client = MikrusClient::new(srv, key);
 
+    let truncate_width = match &cli.command {
+        Command::Stats { truncate } => Some(*truncate),
+        _ => None,
+    };
+
     let result = match cli.command {
         Command::Info => client.info().await,
         Command::Servers => client.servers().await,
@@ -78,7 +88,7 @@ async fn main() -> Result<()> {
         Command::Amfetamina => client.amfetamina().await,
         Command::Db => client.db().await,
         Command::Exec { cmd } => client.exec(&cmd).await,
-        Command::Stats => client.stats().await,
+        Command::Stats { .. } => client.stats().await,
         Command::Ports => client.ports().await,
         Command::Cloud => client.cloud().await,
         Command::Domain { port, domain } => client.domain(&port, &domain).await,
@@ -86,7 +96,11 @@ async fn main() -> Result<()> {
 
     match result {
         Ok(value) => {
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            if let Some(trunc) = truncate_width {
+                print!("{}", format::format_stats(&value, trunc));
+            } else {
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            }
         }
         Err(e) => {
             eprintln!("Error: {e:#}");
@@ -152,6 +166,26 @@ mod tests {
         match cli.command {
             Command::Logs { id } => assert!(id.is_none()),
             _ => panic!("expected Logs command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stats_default_truncate() {
+        let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey", "stats"]);
+        match cli.command {
+            Command::Stats { truncate } => assert_eq!(truncate, 0),
+            _ => panic!("expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stats_custom_truncate() {
+        let cli = Cli::parse_from([
+            "mikrus", "--srv", "srv12345", "--key", "mykey", "stats", "--truncate", "120",
+        ]);
+        match cli.command {
+            Command::Stats { truncate } => assert_eq!(truncate, 120),
+            _ => panic!("expected Stats command"),
         }
     }
 
