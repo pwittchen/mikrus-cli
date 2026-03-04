@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:api.mikr.us)",
+      "Bash(cargo run:*)"
+    ]
+  }
+}
