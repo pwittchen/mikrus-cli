@@ -2,6 +2,31 @@
 
 [mikrus](https://mikr.us/) VPS CLI written in Rust
 
+## Installation
+
+### Prerequisites
+
+- **Rust toolchain** (1.85+) — install via [rustup](https://rustup.rs/):
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+
+### From source
+
+```bash
+git clone https://github.com/pwittchen/mikrus-cli.git
+cd mikrus-cli
+cargo install --path .
+```
+
+### From GitHub directly
+
+```bash
+cargo install --git https://github.com/pwittchen/mikrus-cli.git
+```
+
+The binary will be installed to `~/.cargo/bin/mikrus-cli`.
+
 ## Configuration
 
 Set your credentials via environment variables or pass them as flags:
