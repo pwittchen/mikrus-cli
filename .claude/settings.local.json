@@ -7,7 +7,10 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:lobehub.com)",
       "WebSearch",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd human-readable output formatting for all commands\n\nReplace raw JSON output with formatted text for all commands. Add --json\nflag to preserve raw JSON output for scripting. The exec command shows\njust the output value, objects display aligned key-value pairs, and\narrays render as numbered or bulleted lists.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }
