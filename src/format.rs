@@ -1,11 +1,14 @@
 use serde_json::Value;
 
-/// Known field labels for the stats response (Polish API keys -> English labels).
-fn field_label(key: &str) -> &str {
+/// Section label for known stats keys.
+fn section_label(key: &str) -> &str {
     match key {
+        "free" => "Memory",
+        "df" => "Disk",
+        "uptime" => "Uptime",
+        "ps" => "Processes",
         "ram" | "RAM" => "RAM",
         "dysk" | "disk" | "Disk" => "Disk",
-        "uptime" | "Uptime" => "Uptime",
         "hdd" | "HDD" => "HDD",
         "cpu" | "CPU" => "CPU",
         "swap" | "Swap" => "Swap",
@@ -59,11 +62,14 @@ fn progress_bar(percentage: f64, width: usize) -> String {
     )
 }
 
-/// Format a single stats value — with a bar if a percentage is found.
-fn format_value(value: &str) -> String {
-    match extract_percentage(value) {
-        Some(pct) => format!("{}  {}", progress_bar(pct, 20), value),
-        None => value.to_string(),
+/// Format KiB value to human-readable string.
+fn format_kib(kib: u64) -> String {
+    if kib >= 1_048_576 {
+        format!("{:.1} GB", kib as f64 / 1_048_576.0)
+    } else if kib >= 1024 {
+        format!("{:.0} MB", kib as f64 / 1024.0)
+    } else {
+        format!("{} KB", kib)
     }
 }
 
@@ -73,9 +79,146 @@ fn truncate(text: &str, max_width: usize) -> String {
     if max_width == 0 || text.len() <= max_width {
         return text.to_string();
     }
-    // Need at least 3 chars for the ellipsis to make sense.
     let cut = max_width.saturating_sub(3);
     format!("{}...", &text[..cut])
+}
+
+fn push_line(out: &mut String, line: &str, truncate_width: usize) {
+    out.push_str(&truncate(line, truncate_width));
+    out.push('\n');
+}
+
+/// Returns true for lines that are shell error noise (e.g. "sh: 1: echo", ": not found").
+fn is_shell_noise(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("sh:") || t == ": not found"
+}
+
+/// Extract a JSON value as a plain string.
+fn val_to_string(val: &Value) -> String {
+    match val {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    }
+}
+
+/// Format `free` command output: parse Mem/Swap lines and show progress bars.
+fn format_free_section(out: &mut String, raw: &str, truncate_width: usize) {
+    out.push_str("\nMemory\n");
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Mem:") || trimmed.starts_with("Swap:") {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let label = parts[0].trim_end_matches(':');
+                if let (Ok(total), Ok(used)) = (
+                    parts[1].parse::<u64>(),
+                    parts[2].parse::<u64>(),
+                ) {
+                    let pct = if total > 0 {
+                        (used as f64 / total as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    let bar = progress_bar(pct, 20);
+                    push_line(
+                        out,
+                        &format!(
+                            "  {:6} {}  {} / {}",
+                            label,
+                            bar,
+                            format_kib(used),
+                            format_kib(total)
+                        ),
+                        truncate_width,
+                    );
+                    continue;
+                }
+            }
+        }
+        // Skip header lines (total/used/free column headers)
+        if trimmed.contains("total") && trimmed.contains("used") && trimmed.contains("free") {
+            continue;
+        }
+        if !trimmed.is_empty() && !is_shell_noise(trimmed) {
+            push_line(out, &format!("  {trimmed}"), truncate_width);
+        }
+    }
+}
+
+/// Format `df` command output: show progress bars for each filesystem line.
+fn format_df_section(out: &mut String, raw: &str, truncate_width: usize) {
+    out.push_str("\nDisk\n");
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("Filesystem") || is_shell_noise(trimmed) {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if let Some(pct) = extract_percentage(trimmed) {
+            let bar = progress_bar(pct, 20);
+            // Parse df fields: ..., Size, Used, Avail, Use%, Mounted_on
+            // Use mount point as label to align with Memory section bars.
+            if parts.len() >= 6 {
+                let size = parts[parts.len() - 5];
+                let used = parts[parts.len() - 4];
+                let mount = parts[parts.len() - 1];
+                push_line(
+                    out,
+                    &format!("  {:6} {}  {} / {}", mount, bar, used, size),
+                    truncate_width,
+                );
+            } else {
+                push_line(out, &format!("  {:6} {}  {}", "", bar, trimmed), truncate_width);
+            }
+        } else {
+            push_line(out, &format!("  {trimmed}"), truncate_width);
+        }
+    }
+}
+
+/// Format `uptime` command output.
+fn format_uptime_section(out: &mut String, raw: &str, truncate_width: usize) {
+    out.push_str("\nUptime\n");
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !is_shell_noise(trimmed) {
+            push_line(out, &format!("  {trimmed}"), truncate_width);
+        }
+    }
+}
+
+/// Format `ps` command output.
+fn format_ps_section(out: &mut String, raw: &str, truncate_width: usize) {
+    out.push_str("\nProcesses\n");
+
+    for line in raw.lines() {
+        if !line.trim().is_empty() && !is_shell_noise(line) {
+            push_line(out, &format!("  {}", line.trim()), truncate_width);
+        }
+    }
+}
+
+/// Generic section for unknown keys — show a bar if a percentage is found.
+fn format_generic_section(out: &mut String, key: &str, raw: &str, truncate_width: usize) {
+    let label = section_label(key);
+    out.push_str(&format!("\n{label}\n"));
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let formatted = match extract_percentage(trimmed) {
+            Some(pct) => format!("  {}  {}", progress_bar(pct, 20), trimmed),
+            None => format!("  {trimmed}"),
+        };
+        push_line(out, &formatted, truncate_width);
+    }
 }
 
 /// Format the stats API response as a human-readable string.
@@ -83,50 +226,43 @@ fn truncate(text: &str, max_width: usize) -> String {
 pub fn format_stats(value: &Value, truncate_width: usize) -> String {
     let mut out = String::new();
 
-    out.push_str("Server Statistics\n");
-    out.push_str(&"\u{2500}".repeat(40));
-    out.push('\n');
-
     match value {
         Value::Object(map) => {
-            // Compute the max label width for alignment.
-            let max_label_len = map
-                .keys()
-                .map(|k| field_label(k).len())
-                .max()
-                .unwrap_or(0);
+            // Render known sections in a logical order first.
+            let ordered_keys = ["free", "df", "uptime", "ps"];
 
-            // Prefix: "  " + label + "  "
-            let prefix_width = 2 + max_label_len + 2;
-            let continuation_prefix: String = " ".repeat(prefix_width);
-
-            for (key, val) in map {
-                let label = field_label(key);
-                let raw = match val {
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    other => serde_json::to_string_pretty(other).unwrap_or_default(),
-                };
-
-                let formatted = format_value(&raw);
-                for (i, line) in formatted.lines().enumerate() {
-                    let full_line = if i == 0 {
-                        format!("  {:width$}  {}", label, line, width = max_label_len)
-                    } else {
-                        format!("{}{}", continuation_prefix, line)
-                    };
-                    out.push_str(&truncate(&full_line, truncate_width));
-                    out.push('\n');
+            for &key in &ordered_keys {
+                if let Some(val) = map.get(key) {
+                    let raw = val_to_string(val);
+                    match key {
+                        "free" => format_free_section(&mut out, &raw, truncate_width),
+                        "df" => format_df_section(&mut out, &raw, truncate_width),
+                        "uptime" => format_uptime_section(&mut out, &raw, truncate_width),
+                        "ps" => format_ps_section(&mut out, &raw, truncate_width),
+                        _ => unreachable!(),
+                    }
                 }
             }
+
+            // Render any remaining keys not in the ordered list.
+            for (key, val) in map {
+                if ordered_keys.contains(&key.as_str()) {
+                    continue;
+                }
+                let raw = val_to_string(val);
+                format_generic_section(&mut out, key, &raw, truncate_width);
+            }
         }
-        // If the response is not an object, just print it nicely.
         other => {
             out.push_str(&serde_json::to_string_pretty(other).unwrap_or_default());
             out.push('\n');
         }
     }
 
+    // Remove leading newline from first section.
+    if out.starts_with('\n') {
+        out.remove(0);
+    }
     out
 }
 
@@ -180,19 +316,179 @@ mod tests {
     }
 
     #[test]
-    fn test_format_stats_object() {
+    fn test_format_kib() {
+        assert_eq!(format_kib(0), "0 KB");
+        assert_eq!(format_kib(512), "512 KB");
+        assert_eq!(format_kib(1024), "1 MB");
+        assert_eq!(format_kib(262144), "256 MB");
+        assert_eq!(format_kib(1_048_576), "1.0 GB");
+        assert_eq!(format_kib(5_242_880), "5.0 GB");
+    }
+
+    #[test]
+    fn test_format_free_section() {
+        let free_output = "\
+              total        used        free      shared  buff/cache   available
+Mem:         262144      163840       32768       16384       65536       98304
+Swap:        524288       52428      471860";
+
+        let mut out = String::new();
+        format_free_section(&mut out, free_output, 0);
+        assert!(out.contains("Memory"));
+        assert!(out.contains("Mem"));
+        assert!(out.contains("Swap"));
+        // Mem: 163840/262144 = 62.5%
+        assert!(out.contains("62.5%"));
+        // Swap: 52428/524288 = 10.0%
+        assert!(out.contains("10.0%"));
+        // Should have progress bars
+        assert!(out.contains('['));
+        // Should show human-readable sizes
+        assert!(out.contains("160 MB"));
+        assert!(out.contains("256 MB"));
+    }
+
+    #[test]
+    fn test_format_free_zero_swap() {
+        let free_output = "\
+              total        used        free      shared  buff/cache   available
+Mem:         262144      131072       65536       16384       65536      131072
+Swap:              0           0           0";
+
+        let mut out = String::new();
+        format_free_section(&mut out, free_output, 0);
+        assert!(out.contains("Mem"));
+        assert!(out.contains("50.0%"));
+        // Swap with total=0 should still show a bar at 0%
+        assert!(out.contains("Swap"));
+        assert!(out.contains("0.0%"));
+        assert!(out.contains("0 KB / 0 KB"));
+    }
+
+    #[test]
+    fn test_format_df_section() {
+        let df_output = "\
+Filesystem     1K-blocks    Used Available Use% Mounted on
+/dev/vda1       5242880 1258292   3984588  24% /";
+
+        let mut out = String::new();
+        format_df_section(&mut out, df_output, 0);
+        assert!(out.contains("Disk"));
+        assert!(out.contains("24.0%"));
+        assert!(out.contains('['));
+        // Header line should be skipped
+        assert!(!out.contains("Filesystem"));
+        // Should show parsed used/size/mount with mount as label
+        assert!(out.contains("1258292 / 5242880"));
+    }
+
+    #[test]
+    fn test_format_df_human_readable() {
+        let df_output = "\
+Filesystem                             Size  Used Avail Use% Mounted on
+/dev/mapper/pve-vm--245--disk--0        44G  6.5G   36G  16% /";
+
+        let mut out = String::new();
+        format_df_section(&mut out, df_output, 0);
+        assert!(out.contains("16.0%"));
+        assert!(out.contains("6.5G / 44G"));
+    }
+
+    #[test]
+    fn test_format_uptime_section() {
+        let uptime_output =
+            " 10:23:45 up 10 days, 5:23, 0 users, load average: 0.00, 0.01, 0.05";
+
+        let mut out = String::new();
+        format_uptime_section(&mut out, uptime_output, 0);
+        assert!(out.contains("Uptime"));
+        assert!(out.contains("10 days"));
+        assert!(out.contains("load average"));
+    }
+
+    #[test]
+    fn test_format_uptime_filters_shell_noise() {
+        let uptime_output =
+            " 10:23:45 up 10 days, 5:23, 0 users, load average: 0.00, 0.01, 0.05\nsh: 1: echo";
+
+        let mut out = String::new();
+        format_uptime_section(&mut out, uptime_output, 0);
+        assert!(out.contains("10 days"));
+        assert!(!out.contains("sh:"));
+    }
+
+    #[test]
+    fn test_format_ps_section() {
+        let ps_output = "\
+USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
+
+        let mut out = String::new();
+        format_ps_section(&mut out, ps_output, 0);
+        assert!(out.contains("Processes"));
+        assert!(out.contains("root"));
+        assert!(out.contains("/sbin/init"));
+    }
+
+    #[test]
+    fn test_format_ps_filters_shell_noise() {
+        let ps_output = "\
+: not found
+USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
+
+        let mut out = String::new();
+        format_ps_section(&mut out, ps_output, 0);
+        assert!(!out.contains(": not found"));
+        assert!(out.contains("root"));
+    }
+
+    #[test]
+    fn test_format_stats_real_api_response() {
+        let stats = json!({
+            "free": "              total        used        free      shared  buff/cache   available\nMem:         262144      163840       32768       16384       65536       98304\nSwap:        524288       52428      471860",
+            "df": "Filesystem                             Size  Used Avail Use% Mounted on\n/dev/mapper/pve-vm--245--disk--0        44G  6.5G   36G  16% /",
+            "uptime": " 10:23:45 up 10 days, 5:23, 0 users, load average: 0.00, 0.01, 0.05\nsh: 1: echo",
+            "ps": ": not found\nUSER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\nroot         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init"
+        });
+        let output = format_stats(&stats, 0);
+        // No title header
+        assert!(!output.contains("Server Statistics"));
+        assert!(!output.contains("\u{2500}"));
+        // Memory section should have bars for both Mem and Swap
+        assert!(output.contains("Memory"));
+        assert!(output.contains("62.5%"));
+        assert!(output.contains("10.0%"));
+        // Disk section should have bars
+        assert!(output.contains("Disk"));
+        assert!(output.contains("16.0%"));
+        assert!(output.contains("6.5G / 44G"));
+        // Uptime section, shell noise filtered
+        assert!(output.contains("Uptime"));
+        assert!(output.contains("10 days"));
+        assert!(!output.contains("sh:"));
+        // Processes section, shell noise filtered
+        assert!(output.contains("Processes"));
+        assert!(output.contains("/sbin/init"));
+        assert!(!output.contains(": not found"));
+        // Starts with Memory (first section, no leading blank line)
+        assert!(output.starts_with("Memory\n"));
+    }
+
+    #[test]
+    fn test_format_stats_generic_fallback() {
         let stats = json!({
             "ram": "128/256MB (50%)",
             "dysk": "1.2/5GB (24%)",
             "uptime": "10 days, 5:23"
         });
-        let output = format_stats(&stats, 80);
-        assert!(output.contains("Server Statistics"));
-        assert!(output.contains("RAM"));
-        assert!(output.contains("Disk"));
+        let output = format_stats(&stats, 0);
+        // uptime key matches ordered list but uses generic since value is plain text
         assert!(output.contains("Uptime"));
         assert!(output.contains("10 days, 5:23"));
-        // RAM and Disk should have progress bars
+        // ram and dysk use generic formatter with progress bars
+        assert!(output.contains("RAM"));
+        assert!(output.contains("Disk"));
         assert!(output.contains('['));
     }
 
@@ -200,7 +496,6 @@ mod tests {
     fn test_format_stats_non_object() {
         let stats = json!("just a string");
         let output = format_stats(&stats, 80);
-        assert!(output.contains("Server Statistics"));
         assert!(output.contains("just a string"));
     }
 
@@ -227,20 +522,83 @@ mod tests {
     #[test]
     fn test_format_stats_truncation() {
         let stats = json!({
-            "info": "this is a very long value that should definitely be truncated when the truncate width is set to a small number"
+            "custom": "this is a very long value that should definitely be truncated when the truncate width is set to a small number"
         });
         let output = format_stats(&stats, 40);
-        for line in output.lines().skip(2) {
-            // content lines should be at most 40 chars
-            assert!(line.len() <= 40, "line too long: {:?} ({})", line, line.len());
+        for line in output.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            assert!(
+                line.len() <= 40,
+                "line too long: {:?} ({})",
+                line,
+                line.len()
+            );
         }
     }
 
     #[test]
-    fn test_field_label_mapping() {
-        assert_eq!(field_label("ram"), "RAM");
-        assert_eq!(field_label("dysk"), "Disk");
-        assert_eq!(field_label("uptime"), "Uptime");
-        assert_eq!(field_label("unknown_field"), "unknown_field");
+    fn test_section_label_mapping() {
+        assert_eq!(section_label("free"), "Memory");
+        assert_eq!(section_label("df"), "Disk");
+        assert_eq!(section_label("uptime"), "Uptime");
+        assert_eq!(section_label("ps"), "Processes");
+        assert_eq!(section_label("ram"), "RAM");
+        assert_eq!(section_label("dysk"), "Disk");
+        assert_eq!(section_label("unknown_field"), "unknown_field");
+    }
+
+    #[test]
+    fn test_sections_appear_in_order() {
+        let stats = json!({
+            "ps": "USER PID\nroot 1",
+            "df": "Filesystem Use%\n/dev/vda1 24%",
+            "uptime": "up 10 days",
+            "free": "              total  used  free\nMem:  262144  131072  131072\nSwap: 524288  0  524288"
+        });
+        let output = format_stats(&stats, 0);
+        let mem_pos = output.find("Memory").unwrap();
+        let disk_pos = output.find("Disk").unwrap();
+        let uptime_pos = output.find("Uptime").unwrap();
+        let proc_pos = output.find("Processes").unwrap();
+        assert!(mem_pos < disk_pos, "Memory should come before Disk");
+        assert!(disk_pos < uptime_pos, "Disk should come before Uptime");
+        assert!(uptime_pos < proc_pos, "Uptime should come before Processes");
+    }
+
+    #[test]
+    fn test_all_content_lines_are_indented() {
+        let stats = json!({
+            "free": "              total  used  free\nMem:  262144  131072  131072\nSwap: 524288  0  524288",
+            "df": "Filesystem Size Used Avail Use% Mounted\n/dev/vda1 44G 6.5G 36G 16% /",
+            "uptime": "up 10 days, load average: 0.01, 0.02, 0.03",
+            "ps": "USER PID\nroot 1 /sbin/init"
+        });
+        let output = format_stats(&stats, 0);
+        for line in output.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            // Section headers have no indent
+            if ["Memory", "Disk", "Uptime", "Processes"].contains(&line.trim()) {
+                assert!(!line.starts_with(' '), "headers should not be indented: {line:?}");
+            } else {
+                // Content lines should start with "  "
+                assert!(
+                    line.starts_with("  "),
+                    "content line should be indented: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_shell_noise() {
+        assert!(is_shell_noise("sh: 1: echo"));
+        assert!(is_shell_noise(": not found"));
+        assert!(is_shell_noise("  sh: 1: echo  "));
+        assert!(!is_shell_noise("root 1 /sbin/init"));
+        assert!(!is_shell_noise("USER PID"));
     }
 }

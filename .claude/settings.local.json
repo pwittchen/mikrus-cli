@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:api.mikr.us)",
-      "Bash(cargo run:*)"
+      "Bash(cargo run:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:lobehub.com)",
+      "WebSearch",
+      "Bash(cargo test:*)"
     ]
   }
 }
