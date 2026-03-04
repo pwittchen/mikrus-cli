@@ -25,7 +25,7 @@ cargo install --path .
 cargo install --git https://github.com/pwittchen/mikrus-cli.git
 ```
 
-The binary will be installed to `~/.cargo/bin/mikrus-cli`.
+The binary will be installed to `~/.cargo/bin/mikrus`.
 
 ### Uninstallation
 
@@ -47,7 +47,7 @@ Or use `--srv` and `--key` flags with each command.
 ## Usage
 
 ```bash
-mikrus-cli [--srv <SRV>] [--key <KEY>] <COMMAND>
+mikrus [--srv <SRV>] [--key <KEY>] <COMMAND>
 ```
 
 ## Commands
