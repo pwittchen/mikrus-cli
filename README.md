@@ -65,6 +65,7 @@ mikrus [--srv <SRV>] [--key <KEY>] <COMMAND>
 | `ports` | Show TCP/UDP ports |
 | `cloud` | Show cloud services & stats |
 | `domain <PORT> <DOMAIN>` | Assign domain to server |
+| `config` | Show current configuration (MIKRUS_SRV and MIKRUS_KEY) |
 
 ## Building
 

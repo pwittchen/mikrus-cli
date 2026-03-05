@@ -64,11 +64,25 @@ enum Command {
         /// Domain name
         domain: String,
     },
+    /// Show current configuration (MIKRUS_SRV and MIKRUS_KEY)
+    Config,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if matches!(cli.command, Command::Config) {
+        match &cli.srv {
+            Some(srv) => println!("MIKRUS_SRV: {srv}"),
+            None => println!("MIKRUS_SRV: not set"),
+        }
+        match &cli.key {
+            Some(key) => println!("MIKRUS_KEY: {key}"),
+            None => println!("MIKRUS_KEY: not set"),
+        }
+        return Ok(());
+    }
 
     let srv = cli
         .srv
@@ -96,6 +110,7 @@ async fn main() -> Result<()> {
         Command::Ports => "ports",
         Command::Cloud => "cloud",
         Command::Domain { .. } => "domain",
+        Command::Config => unreachable!(),
     };
 
     let result = match cli.command {
@@ -110,6 +125,7 @@ async fn main() -> Result<()> {
         Command::Ports => client.ports().await,
         Command::Cloud => client.cloud().await,
         Command::Domain { port, domain } => client.domain(&port, &domain).await,
+        Command::Config => unreachable!(),
     };
 
     match result {
