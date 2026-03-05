@@ -315,7 +315,7 @@ fn format_array(arr: &[Value], indent: usize) -> String {
         }
     } else {
         for item in arr {
-            out.push_str(&format!("{prefix}- {}\n", format_scalar(item)));
+            out.push_str(&format!("{prefix}{}\n", format_scalar(item)));
         }
     }
     out
@@ -863,9 +863,10 @@ root         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
     fn test_format_value_scalar_array() {
         let val = json!(["one", "two", "three"]);
         let output = format_value(&val, "test");
-        assert!(output.contains("- one"));
-        assert!(output.contains("- two"));
-        assert!(output.contains("- three"));
+        assert!(output.contains("one"));
+        assert!(output.contains("two"));
+        assert!(output.contains("three"));
+        assert!(!output.contains("- "));
     }
 
     #[test]
