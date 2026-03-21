@@ -22,7 +22,7 @@ struct Cli {
     json: bool,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -77,11 +77,30 @@ enum StatsCommand {
     Short,
 }
 
+const ASCII_LOGO: &str = r#"
+           _ _
+          (_) |
+ _ __ ___  _| | ___ __ _   _ ___
+| '_ ` _ \| | |/ / '__| | | / __|
+| | | | | | |   <| |  | |_| \__ \
+|_| |_| |_|_|_|\_\_|   \__,_|___/
+"#;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if matches!(cli.command, Command::Config) {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            print!("{ASCII_LOGO}\n");
+            println!("Welcome to mikrus\n");
+            Cli::parse_from(["mikrus", "--help"]);
+            unreachable!();
+        }
+    };
+
+    if matches!(command, Command::Config) {
         match &cli.srv {
             Some(srv) => println!("MIKRUS_SRV: {srv}"),
             None => println!("MIKRUS_SRV: not set"),
@@ -102,7 +121,7 @@ async fn main() -> Result<()> {
 
     let client = MikrusClient::new(srv, key);
 
-    let truncate_width = match &cli.command {
+    let truncate_width = match &command {
         Command::Stats { truncate, sub } => {
             if matches!(sub, Some(StatsCommand::Short)) {
                 Some(100)
@@ -113,7 +132,7 @@ async fn main() -> Result<()> {
         _ => None,
     };
 
-    let command_name = match &cli.command {
+    let command_name = match &command {
         Command::Info => "info",
         Command::Servers => "servers",
         Command::Restart => "restart",
@@ -128,7 +147,7 @@ async fn main() -> Result<()> {
         Command::Config => unreachable!(),
     };
 
-    let result = match cli.command {
+    let result = match command {
         Command::Info => client.info().await,
         Command::Servers => client.servers().await,
         Command::Restart => client.restart().await,
@@ -172,7 +191,7 @@ mod tests {
         let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey", "info"]);
         assert_eq!(cli.srv.unwrap(), "srv12345");
         assert_eq!(cli.key.unwrap(), "mykey");
-        assert!(matches!(cli.command, Command::Info));
+        assert!(matches!(cli.command, Some(Command::Info)));
     }
 
     #[test]
@@ -181,7 +200,7 @@ mod tests {
             "mikrus", "--srv", "srv12345", "--key", "mykey", "exec", "uptime",
         ]);
         match cli.command {
-            Command::Exec { cmd } => assert_eq!(cmd, "uptime"),
+            Some(Command::Exec { cmd }) => assert_eq!(cmd, "uptime"),
             _ => panic!("expected Exec command"),
         }
     }
@@ -192,7 +211,7 @@ mod tests {
             "mikrus", "--srv", "srv12345", "--key", "mykey", "domain", "8080", "example.com",
         ]);
         match cli.command {
-            Command::Domain { port, domain } => {
+            Some(Command::Domain { port, domain }) => {
                 assert_eq!(port, "8080");
                 assert_eq!(domain, "example.com");
             }
@@ -206,7 +225,7 @@ mod tests {
             "mikrus", "--srv", "srv12345", "--key", "mykey", "logs", "42",
         ]);
         match cli.command {
-            Command::Logs { id } => assert_eq!(id.unwrap(), "42"),
+            Some(Command::Logs { id }) => assert_eq!(id.unwrap(), "42"),
             _ => panic!("expected Logs command"),
         }
     }
@@ -215,7 +234,7 @@ mod tests {
     fn test_parse_logs_without_id() {
         let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey", "logs"]);
         match cli.command {
-            Command::Logs { id } => assert!(id.is_none()),
+            Some(Command::Logs { id }) => assert!(id.is_none()),
             _ => panic!("expected Logs command"),
         }
     }
@@ -224,7 +243,7 @@ mod tests {
     fn test_parse_stats_default_truncate() {
         let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey", "stats"]);
         match cli.command {
-            Command::Stats { truncate, sub } => {
+            Some(Command::Stats { truncate, sub }) => {
                 assert_eq!(truncate, 0);
                 assert!(sub.is_none());
             }
@@ -238,7 +257,7 @@ mod tests {
             "mikrus", "--srv", "srv12345", "--key", "mykey", "stats", "--truncate", "120",
         ]);
         match cli.command {
-            Command::Stats { truncate, sub } => {
+            Some(Command::Stats { truncate, sub }) => {
                 assert_eq!(truncate, 120);
                 assert!(sub.is_none());
             }
@@ -252,7 +271,7 @@ mod tests {
             "mikrus", "--srv", "srv12345", "--key", "mykey", "stats", "short",
         ]);
         match cli.command {
-            Command::Stats { truncate: _, sub } => {
+            Some(Command::Stats { truncate: _, sub }) => {
                 assert!(matches!(sub, Some(StatsCommand::Short)));
             }
             _ => panic!("expected Stats command"),
@@ -261,8 +280,8 @@ mod tests {
 
     #[test]
     fn test_missing_subcommand() {
-        let result = Cli::try_parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey"]);
-        assert!(result.is_err());
+        let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey"]);
+        assert!(cli.command.is_none());
     }
 
     #[test]
@@ -271,7 +290,7 @@ mod tests {
             "mikrus", "--srv", "srv12345", "--key", "mykey", "--json", "info",
         ]);
         assert!(cli.json);
-        assert!(matches!(cli.command, Command::Info));
+        assert!(matches!(cli.command, Some(Command::Info)));
     }
 
     #[test]
