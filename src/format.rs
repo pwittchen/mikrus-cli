@@ -192,6 +192,42 @@ fn format_uptime_section(out: &mut String, raw: &str, truncate_width: usize) {
     }
 }
 
+/// Format CPU usage section: parse `ps` output to sum %CPU values and show a progress bar.
+fn format_cpu_section(out: &mut String, raw: &str, truncate_width: usize) {
+    out.push_str("\nCPU\n");
+
+    // Find the header line containing %CPU to determine its column index
+    let mut cpu_col_idx: Option<usize> = None;
+    let mut total_cpu: f64 = 0.0;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || is_shell_noise(trimmed) {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if cpu_col_idx.is_none() {
+            // Look for header line
+            if let Some(idx) = parts.iter().position(|&p| p == "%CPU") {
+                cpu_col_idx = Some(idx);
+            }
+            continue;
+        }
+        // Data line — extract %CPU value
+        if let Some(idx) = cpu_col_idx {
+            if let Some(val_str) = parts.get(idx) {
+                if let Ok(val) = val_str.parse::<f64>() {
+                    total_cpu += val;
+                }
+            }
+        }
+    }
+
+    let capped = total_cpu.min(100.0);
+    let bar = progress_bar(capped, 20);
+    push_line(out, &format!("  {:6} {}", "Total", bar), truncate_width);
+}
+
 /// Format `ps` command output.
 fn format_ps_section(out: &mut String, raw: &str, truncate_width: usize) {
     out.push_str("\nProcesses\n");
@@ -363,7 +399,13 @@ pub fn format_stats(value: &Value, truncate_width: usize) -> String {
 
     match value {
         Value::Object(map) => {
-            // Render known sections in a logical order first.
+            // Render CPU section first (derived from ps data).
+            if let Some(ps_val) = map.get("ps") {
+                let raw = val_to_string(ps_val);
+                format_cpu_section(&mut out, &raw, truncate_width);
+            }
+
+            // Render known sections in a logical order.
             let ordered_keys = ["free", "df", "uptime", "ps"];
 
             for &key in &ordered_keys {
@@ -606,8 +648,12 @@ root         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
         assert!(output.contains("Processes"));
         assert!(output.contains("/sbin/init"));
         assert!(!output.contains(": not found"));
-        // Starts with Memory (first section, no leading blank line)
-        assert!(output.starts_with("Memory\n"));
+        // CPU section should appear (derived from ps data)
+        assert!(output.contains("CPU"));
+        assert!(output.contains("Total"));
+        assert!(output.contains("0.0%"));
+        // Starts with CPU (first section, no leading blank line)
+        assert!(output.starts_with("CPU\n"));
     }
 
     #[test]
@@ -693,10 +739,12 @@ root         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
             "free": "              total  used  free\nMem:  262144  131072  131072\nSwap: 524288  0  524288"
         });
         let output = format_stats(&stats, 0);
+        let cpu_pos = output.find("CPU").unwrap();
         let mem_pos = output.find("Memory").unwrap();
         let disk_pos = output.find("Disk").unwrap();
         let uptime_pos = output.find("Uptime").unwrap();
         let proc_pos = output.find("Processes").unwrap();
+        assert!(cpu_pos < mem_pos, "CPU should come before Memory");
         assert!(mem_pos < disk_pos, "Memory should come before Disk");
         assert!(disk_pos < uptime_pos, "Disk should come before Uptime");
         assert!(uptime_pos < proc_pos, "Uptime should come before Processes");
@@ -716,7 +764,7 @@ root         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
                 continue;
             }
             // Section headers have no indent
-            if ["Memory", "Disk", "Uptime", "Processes"].contains(&line.trim()) {
+            if ["CPU", "Memory", "Disk", "Uptime", "Processes"].contains(&line.trim()) {
                 assert!(!line.starts_with(' '), "headers should not be indented: {line:?}");
             } else {
                 // Content lines should start with "  "
@@ -726,6 +774,47 @@ root         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_format_cpu_section() {
+        let ps_output = "\
+USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root         1  0.5  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init
+www-data   100  3.2  1.0  50000  2500 ?        S    Jan01   0:30 nginx
+root       200  8.6  2.0  80000  5000 ?        Sl   Jan01   1:20 java";
+
+        let mut out = String::new();
+        format_cpu_section(&mut out, ps_output, 0);
+        assert!(out.contains("CPU"));
+        assert!(out.contains("Total"));
+        // 0.5 + 3.2 + 8.6 = 12.3%
+        assert!(out.contains("12.3%"));
+        assert!(out.contains('['));
+    }
+
+    #[test]
+    fn test_format_cpu_section_zero() {
+        let ps_output = "\
+USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root         1  0.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init
+root         2  0.0  0.1   1000   200 ?        S    Jan01   0:00 [kthreadd]";
+
+        let mut out = String::new();
+        format_cpu_section(&mut out, ps_output, 0);
+        assert!(out.contains("0.0%"));
+    }
+
+    #[test]
+    fn test_format_cpu_section_with_shell_noise() {
+        let ps_output = "\
+: not found
+USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root         1  5.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
+
+        let mut out = String::new();
+        format_cpu_section(&mut out, ps_output, 0);
+        assert!(out.contains("5.0%"));
     }
 
     #[test]
