@@ -60,8 +60,7 @@ enum Command {
     Ports,
     /// Show cloud services & stats
     Cloud,
-    /// Assign domain to server (*.tojest.dev, *.bieda.it, *.toadres.pl, *.byst.re).
-    /// If domain is omitted, the server assigns one automatically.
+    /// Assign domain to server [auto, *.tojest.dev, *.bieda.it, *.toadres.pl, *.byst.re].
     Domain {
         /// Port number
         port: String,

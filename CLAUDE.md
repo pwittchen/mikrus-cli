@@ -37,3 +37,7 @@ GitHub Actions runs `cargo build --verbose` and `cargo test --verbose` on pushes
 Authentication is provided via CLI flags or environment variables:
 - `--srv` / `MIKRUS_SRV` — server name (e.g. `srv12345`)
 - `--key` / `MIKRUS_KEY` — API key
+
+## Git Commits
+
+Do not add `Co-Authored-By` lines to commit messages.
