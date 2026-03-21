@@ -186,6 +186,8 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&value)?);
             } else if let Some(trunc) = truncate_width {
                 print!("{}", format::format_stats(&value, trunc));
+            } else if command_name == "db" {
+                print!("{}", format::format_db(&value));
             } else if logs_short {
                 print!("{}", format::format_logs_short(&value));
             } else {

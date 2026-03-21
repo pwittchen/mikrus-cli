@@ -472,6 +472,63 @@ pub fn format_logs_short(value: &Value) -> String {
     format_log_entries_aligned(entries)
 }
 
+/// Split a line at the first `: ` into (key, value). Returns None if no separator found.
+fn split_kv(line: &str) -> Option<(&str, &str)> {
+    let pos = line.find(": ")?;
+    Some((line[..pos].trim(), line[pos + 2..].trim()))
+}
+
+/// Format the db API response with vertically aligned values across all sections.
+///
+/// The API returns an object like `{"mongo": "Login: x\nHaslo: y\n...", "psql": "..."}`.
+/// Each value is a multi-line string containing `Key: value` pairs.
+pub fn format_db(value: &Value) -> String {
+    let map = match value {
+        Value::Object(map) => map,
+        _ => return format_value(value, "db"),
+    };
+
+    // Collect all sections as (header, Vec<(key, value) | plain line>).
+    // A line without `: ` is stored with an empty key.
+    let mut sections: Vec<(String, Vec<(String, String)>)> = Vec::new();
+
+    for (section_key, val) in map {
+        let header = humanize_key(section_key);
+        let raw = val_to_string(val);
+        let lines: Vec<(String, String)> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|line| match split_kv(line) {
+                Some((k, v)) => Some((k.to_string(), v.to_string())),
+                None => None,
+            })
+            .collect();
+        sections.push((header, lines));
+    }
+
+    // Compute global max key width across all sections.
+    let max_key = sections
+        .iter()
+        .flat_map(|(_, lines)| lines.iter())
+        .map(|(k, _)| k.len())
+        .max()
+        .unwrap_or(0);
+
+    // Render sections.
+    let mut out = String::new();
+    for (i, (header, lines)) in sections.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&header);
+        out.push('\n');
+        for (key, val) in lines {
+            out.push_str(&format!("  {:<width$}  {}\n", format!("{key}:"), val, width = max_key + 1));
+        }
+    }
+    out
+}
+
 /// Format a JSON API response as human-readable text.
 ///
 /// Special cases:
@@ -1078,6 +1135,52 @@ root         1  5.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
         let val = json!("just a message");
         let output = format_value(&val, "test");
         assert_eq!(output, "just a message\n");
+    }
+
+    // --- Tests for db formatting ---
+
+    #[test]
+    fn test_format_db_aligned_across_sections() {
+        let val = json!({
+            "mongo": "Baza zalozona\nLogin: user123\nBaza: db_user123\nHaslo: s3cretPass\nHost: mongodb.mikr.dev\nPort: 27017",
+            "psql": "Server: psql01.mikr.us\nlogin: user123\nHaslo: p4ssw0rd\nBaza: db_user123"
+        });
+        let output = format_db(&val);
+        // Section headers should be present
+        assert!(output.contains("Mongo\n"));
+        assert!(output.contains("Psql\n"));
+        // All key-value lines should have values starting at the same column
+        let kv_lines: Vec<&str> = output
+            .lines()
+            .filter(|l| l.starts_with("  ") && l.contains(':'))
+            .collect();
+        assert!(!kv_lines.is_empty());
+        let value_positions: Vec<usize> = kv_lines
+            .iter()
+            .map(|l| {
+                let colon = l.find(':').unwrap();
+                let after = &l[colon + 1..];
+                let trimmed = after.trim_start();
+                l.len() - after.len() + (after.len() - trimmed.len())
+            })
+            .collect();
+        assert!(
+            value_positions.windows(2).all(|w| w[0] == w[1]),
+            "values not aligned: positions {:?}\n{}",
+            value_positions,
+            output
+        );
+    }
+
+    #[test]
+    fn test_format_db_plain_lines_skipped() {
+        let val = json!({
+            "mongo": "Baza zalozona\nLogin: user123"
+        });
+        let output = format_db(&val);
+        assert!(!output.contains("Baza zalozona"), "plain lines should be skipped: {:?}", output);
+        assert!(output.contains("Login:"));
+        assert!(output.contains("user123"));
     }
 
     // --- Tests for logs short formatting ---
