@@ -61,7 +61,7 @@ mikrus [--srv <SRV>] [--key <KEY>] <COMMAND>
 | `amfetamina` | Performance boost |
 | `db` | Show database credentials |
 | `exec <CMD>` | Execute a command on the server |
-| `stats [--truncate <WIDTH>]` | Show disk/memory/uptime statistics (truncate long lines at WIDTH, adding "..."; 0 = no truncation) |
+| `stats [--truncate <WIDTH>] [short]` | Show disk/memory/uptime statistics (truncate long lines at WIDTH, adding "..."; 0 = no truncation; `short` is a shortcut for `--truncate 100`) |
 | `ports` | Show TCP/UDP ports |
 | `cloud` | Show cloud services & stats |
 | `domain <PORT> <DOMAIN>` | Assign domain to server |

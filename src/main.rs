@@ -52,6 +52,9 @@ enum Command {
         /// Truncate long lines at this width, adding "..." (0 = no truncation)
         #[arg(long, default_value_t = 0)]
         truncate: usize,
+
+        #[command(subcommand)]
+        sub: Option<StatsCommand>,
     },
     /// Show TCP/UDP ports
     Ports,
@@ -66,6 +69,12 @@ enum Command {
     },
     /// Show current configuration (MIKRUS_SRV and MIKRUS_KEY)
     Config,
+}
+
+#[derive(Subcommand, Debug)]
+enum StatsCommand {
+    /// Shortcut for --truncate 100
+    Short,
 }
 
 #[tokio::main]
@@ -94,7 +103,13 @@ async fn main() -> Result<()> {
     let client = MikrusClient::new(srv, key);
 
     let truncate_width = match &cli.command {
-        Command::Stats { truncate } => Some(*truncate),
+        Command::Stats { truncate, sub } => {
+            if matches!(sub, Some(StatsCommand::Short)) {
+                Some(100)
+            } else {
+                Some(*truncate)
+            }
+        }
         _ => None,
     };
 
@@ -209,7 +224,10 @@ mod tests {
     fn test_parse_stats_default_truncate() {
         let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey", "stats"]);
         match cli.command {
-            Command::Stats { truncate } => assert_eq!(truncate, 0),
+            Command::Stats { truncate, sub } => {
+                assert_eq!(truncate, 0);
+                assert!(sub.is_none());
+            }
             _ => panic!("expected Stats command"),
         }
     }
@@ -220,7 +238,23 @@ mod tests {
             "mikrus", "--srv", "srv12345", "--key", "mykey", "stats", "--truncate", "120",
         ]);
         match cli.command {
-            Command::Stats { truncate } => assert_eq!(truncate, 120),
+            Command::Stats { truncate, sub } => {
+                assert_eq!(truncate, 120);
+                assert!(sub.is_none());
+            }
+            _ => panic!("expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stats_short() {
+        let cli = Cli::parse_from([
+            "mikrus", "--srv", "srv12345", "--key", "mykey", "stats", "short",
+        ]);
+        match cli.command {
+            Command::Stats { truncate: _, sub } => {
+                assert!(matches!(sub, Some(StatsCommand::Short)));
+            }
             _ => panic!("expected Stats command"),
         }
     }
