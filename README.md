@@ -47,8 +47,10 @@ Or use `--srv` and `--key` flags with each command.
 ## Usage
 
 ```bash
-mikrus [--srv <SRV>] [--key <KEY>] <COMMAND>
+mikrus [--srv <SRV>] [--key <KEY>] [--json] <COMMAND>
 ```
+
+Use `--json` to output raw JSON instead of formatted text.
 
 ## Commands
 
@@ -64,7 +66,7 @@ mikrus [--srv <SRV>] [--key <KEY>] <COMMAND>
 | `stats [--truncate <WIDTH>] [short]` | Show disk/memory/uptime statistics (truncate long lines at WIDTH, adding "..."; 0 = no truncation; `short` is a shortcut for `--truncate 100`) |
 | `ports` | Show TCP/UDP ports |
 | `cloud` | Show cloud services & stats |
-| `domain <PORT> <DOMAIN>` | Assign domain to server |
+| `domain <PORT> [DOMAIN]` | Assign domain to server (omit domain for auto-assignment; available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re`) |
 | `config` | Show current configuration (MIKRUS_SRV and MIKRUS_KEY) |
 
 ## Building
