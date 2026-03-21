@@ -357,6 +357,121 @@ fn format_array(arr: &[Value], indent: usize) -> String {
     out
 }
 
+/// Flatten a JSON value to a short string for log display.
+/// Replaces newlines with spaces and truncates long strings to 50 chars.
+fn flatten_log_value(val: &Value) -> Option<String> {
+    match val {
+        Value::String(s) => {
+            let flat: String = s
+                .chars()
+                .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+                .collect();
+            let char_count = flat.chars().count();
+            if char_count > 50 {
+                let truncated: String = flat.chars().take(47).collect();
+                Some(format!("{truncated}..."))
+            } else {
+                Some(flat)
+            }
+        }
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(if *b { "Yes" } else { "No" }.to_string()),
+        Value::Null | _ => None,
+    }
+}
+
+/// Extract columns from a single log entry.
+/// The "output" key is shown without a label; all other keys get a `Key: value` label.
+fn log_entry_columns(value: &Value) -> Vec<String> {
+    let map = match value {
+        Value::Object(map) => map,
+        _ => return vec![format_scalar(value)],
+    };
+
+    let mut cols: Vec<String> = Vec::new();
+
+    // Display fields in a fixed order, stopping at when_done.
+    let column_defs: &[(&str, Option<&str>)] = &[
+        ("id", None),
+        ("server_id", Some("srv")),
+        ("task", None),
+        ("when_created", Some("created")),
+        ("when_done", Some("done")),
+    ];
+
+    for &(key, label) in column_defs {
+        if let Some(val) = map.get(key) {
+            if let Some(s) = flatten_log_value(val) {
+                match label {
+                    Some(l) => cols.push(format!("{l}: {s}")),
+                    None => cols.push(s),
+                }
+            }
+        }
+    }
+
+    cols
+}
+
+/// Two-pass formatter: compute column widths, then render aligned rows.
+fn format_log_entries_aligned(entries: &[Value]) -> String {
+    if entries.is_empty() {
+        return "(no logs)\n".to_string();
+    }
+
+    let rows: Vec<Vec<String>> = entries.iter().map(log_entry_columns).collect();
+
+    // Compute max width per column position.
+    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut col_widths: Vec<usize> = vec![0; max_cols];
+    for row in &rows {
+        for (i, col) in row.iter().enumerate() {
+            col_widths[i] = col_widths[i].max(col.len());
+        }
+    }
+
+    let mut out = String::new();
+    for row in &rows {
+        let mut line = String::new();
+        for (i, col) in row.iter().enumerate() {
+            if i > 0 {
+                line.push_str(" | ");
+            }
+            // Pad all columns except the last one.
+            if i + 1 < row.len() {
+                line.push_str(&format!("{:<width$}", col, width = col_widths[i]));
+            } else {
+                line.push_str(col);
+            }
+        }
+        out.push_str(&truncate(&line, 100));
+        out.push('\n');
+    }
+    out
+}
+
+/// Format log entries in a condensed one-line-per-entry format with aligned columns.
+pub fn format_logs_short(value: &Value) -> String {
+    let entries = match value {
+        Value::Array(arr) => arr.as_slice(),
+        Value::Object(map) => {
+            // API may wrap logs array in an object
+            for val in map.values() {
+                if let Value::Array(arr) = val {
+                    return format_log_entries_aligned(arr);
+                }
+            }
+            // Single object
+            return format_log_entries_aligned(std::slice::from_ref(value));
+        }
+        _ => {
+            return format!("{}\n", format_scalar(value));
+        }
+    };
+
+    format_log_entries_aligned(entries)
+}
+
 /// Format a JSON API response as human-readable text.
 ///
 /// Special cases:
@@ -963,5 +1078,135 @@ root         1  5.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
         let val = json!("just a message");
         let output = format_value(&val, "test");
         assert_eq!(output, "just a message\n");
+    }
+
+    // --- Tests for logs short formatting ---
+
+    #[test]
+    fn test_format_logs_short_array_of_objects() {
+        let val = json!([
+            {"id": 1, "task": "restart", "when": "2024-01-15"},
+            {"id": 2, "task": "exec", "when": "2024-01-16"}
+        ]);
+        let output = format_logs_short(&val);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("1"));
+        assert!(lines[0].contains("restart"));
+        assert!(!lines[0].contains("Task:"), "task should have no label: {:?}", lines[0]);
+        assert!(lines[1].contains("2"));
+        // "id" field should have no label
+        assert!(!lines[0].contains("Id:"), "id should have no label: {:?}", lines[0]);
+    }
+
+    #[test]
+    fn test_format_logs_short_empty_array() {
+        let val = json!([]);
+        let output = format_logs_short(&val);
+        assert_eq!(output, "(no logs)\n");
+    }
+
+    #[test]
+    fn test_format_logs_short_wrapped_in_object() {
+        let val = json!({"logs": [
+            {"id": 1, "task": "restart"}
+        ]});
+        let output = format_logs_short(&val);
+        assert!(output.contains("1"));
+        assert!(output.contains("restart"));
+        assert!(!output.contains("Id:"), "id should have no label: {:?}", output);
+    }
+
+    #[test]
+    fn test_format_logs_short_truncates_long_values() {
+        let long_value = "a".repeat(100);
+        let val = json!([{"id": 1, "task": long_value}]);
+        let output = format_logs_short(&val);
+        assert!(output.contains("..."));
+        // The truncated value should be 47 chars + "..." = 50 display chars
+        assert!(!output.contains(&long_value));
+    }
+
+    #[test]
+    fn test_format_logs_short_line_max_100_chars() {
+        let val = json!([
+            {"id": 1, "task": "a]".repeat(30), "when": "2024-01-15", "extra": "more data here"}
+        ]);
+        let output = format_logs_short(&val);
+        for line in output.lines() {
+            assert!(
+                line.len() <= 100,
+                "line exceeds 100 chars: {:?} ({})",
+                line,
+                line.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_logs_short_newlines_flattened() {
+        let val = json!([
+            {"id": 1, "task": "line1\nline2\nline3"}
+        ]);
+        let output = format_logs_short(&val);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 1, "each log entry must be a single line, got: {:?}", lines);
+        assert!(lines[0].contains("line1 line2 line3"));
+    }
+
+    #[test]
+    fn test_format_logs_short_skips_output_field() {
+        let val = json!([
+            {"id": 1, "task": "restart", "output": "some output"}
+        ]);
+        let output = format_logs_short(&val);
+        assert!(!output.contains("output"), "output field should be skipped: {:?}", output);
+        assert!(!output.contains("some output"), "output value should be skipped: {:?}", output);
+    }
+
+    #[test]
+    fn test_format_logs_short_stops_after_done() {
+        let val = json!([
+            {"id": 1, "task": "restart", "when_done": "2024-01-15", "extra": "hidden"}
+        ]);
+        let output = format_logs_short(&val);
+        assert!(output.contains("done: 2024-01-15"));
+        assert!(!output.contains("Extra"), "fields after when_done should be hidden: {:?}", output);
+        assert!(!output.contains("hidden"), "fields after when_done should be hidden: {:?}", output);
+    }
+
+    #[test]
+    fn test_format_logs_short_pipes_aligned() {
+        let val = json!([
+            {"id": 1, "task": "restart", "when_created": "2024-01-15"},
+            {"id": 2, "task": "exec", "when_created": "2024-01-16"},
+            {"id": 30, "task": "amfetamina", "when_created": "2024-01-17"}
+        ]);
+        let output = format_logs_short(&val);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 3);
+        // All first "|" should be at the same position
+        let first_pipe: Vec<usize> = lines.iter().map(|l| l.find('|').unwrap()).collect();
+        assert_eq!(first_pipe[0], first_pipe[1], "first pipe not aligned: {:?}", lines);
+        assert_eq!(first_pipe[1], first_pipe[2], "first pipe not aligned: {:?}", lines);
+        // All second "|" should be at the same position
+        let second_pipe: Vec<usize> = lines
+            .iter()
+            .map(|l| l[first_pipe[0] + 1..].find('|').unwrap() + first_pipe[0] + 1)
+            .collect();
+        assert_eq!(second_pipe[0], second_pipe[1], "second pipe not aligned: {:?}", lines);
+        assert_eq!(second_pipe[1], second_pipe[2], "second pipe not aligned: {:?}", lines);
+    }
+
+    #[test]
+    fn test_format_logs_short_only_known_fields() {
+        let val = json!([
+            {"id": 1, "task": "test", "unknown_field": "ignored", "output": "also ignored"}
+        ]);
+        let output = format_logs_short(&val);
+        assert!(output.contains("1"));
+        assert!(output.contains("test"));
+        assert!(!output.contains("ignored"), "unknown fields should be skipped: {:?}", output);
+        assert!(!output.contains("Unknown"), "unknown fields should be skipped: {:?}", output);
     }
 }

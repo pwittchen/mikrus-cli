@@ -2,7 +2,7 @@ mod api;
 mod format;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 use api::MikrusClient;
 
@@ -34,10 +34,7 @@ enum Command {
     /// Restart the server
     Restart,
     /// Show log entries (optional: specific log ID)
-    Logs {
-        /// Specific log ID
-        id: Option<String>,
-    },
+    Logs(LogsArgs),
     /// Performance boost
     Amfetamina,
     /// Show database credentials
@@ -69,6 +66,22 @@ enum Command {
     },
     /// Show current configuration (MIKRUS_SRV and MIKRUS_KEY)
     Config,
+}
+
+#[derive(Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct LogsArgs {
+    /// Specific log ID
+    id: Option<String>,
+
+    #[command(subcommand)]
+    sub: Option<LogsCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum LogsCommand {
+    /// Show condensed one-line-per-entry log summary
+    Short,
 }
 
 #[derive(Subcommand, Debug)]
@@ -121,6 +134,8 @@ async fn main() -> Result<()> {
 
     let client = MikrusClient::new(srv, key);
 
+    let logs_short = matches!(&command, Command::Logs(args) if args.sub.is_some());
+
     let truncate_width = match &command {
         Command::Stats { truncate, sub } => {
             if matches!(sub, Some(StatsCommand::Short)) {
@@ -136,7 +151,7 @@ async fn main() -> Result<()> {
         Command::Info => "info",
         Command::Servers => "servers",
         Command::Restart => "restart",
-        Command::Logs { .. } => "logs",
+        Command::Logs(_) => "logs",
         Command::Amfetamina => "amfetamina",
         Command::Db => "db",
         Command::Exec { .. } => "exec",
@@ -151,7 +166,7 @@ async fn main() -> Result<()> {
         Command::Info => client.info().await,
         Command::Servers => client.servers().await,
         Command::Restart => client.restart().await,
-        Command::Logs { id } => client.logs(id.as_deref()).await,
+        Command::Logs(args) => client.logs(args.id.as_deref()).await,
         Command::Amfetamina => client.amfetamina().await,
         Command::Db => client.db().await,
         Command::Exec { cmd } => client.exec(&cmd).await,
@@ -171,6 +186,8 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&value)?);
             } else if let Some(trunc) = truncate_width {
                 print!("{}", format::format_stats(&value, trunc));
+            } else if logs_short {
+                print!("{}", format::format_logs_short(&value));
             } else {
                 print!("{}", format::format_value(&value, command_name));
             }
@@ -242,7 +259,10 @@ mod tests {
             "mikrus", "--srv", "srv12345", "--key", "mykey", "logs", "42",
         ]);
         match cli.command {
-            Some(Command::Logs { id }) => assert_eq!(id.unwrap(), "42"),
+            Some(Command::Logs(args)) => {
+                assert_eq!(args.id.unwrap(), "42");
+                assert!(args.sub.is_none());
+            }
             _ => panic!("expected Logs command"),
         }
     }
@@ -251,7 +271,24 @@ mod tests {
     fn test_parse_logs_without_id() {
         let cli = Cli::parse_from(["mikrus", "--srv", "srv12345", "--key", "mykey", "logs"]);
         match cli.command {
-            Some(Command::Logs { id }) => assert!(id.is_none()),
+            Some(Command::Logs(args)) => {
+                assert!(args.id.is_none());
+                assert!(args.sub.is_none());
+            }
+            _ => panic!("expected Logs command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_logs_short() {
+        let cli = Cli::parse_from([
+            "mikrus", "--srv", "srv12345", "--key", "mykey", "logs", "short",
+        ]);
+        match cli.command {
+            Some(Command::Logs(args)) => {
+                assert!(args.id.is_none());
+                assert!(matches!(args.sub, Some(LogsCommand::Short)));
+            }
             _ => panic!("expected Logs command"),
         }
     }

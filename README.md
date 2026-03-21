@@ -60,6 +60,7 @@ Use `--json` to output raw JSON instead of formatted text.
 | `servers` | List all user servers |
 | `restart` | Restart the server |
 | `logs [ID]` | Show log entries (optional: specific log ID) |
+| `logs short` | Show condensed one-line-per-entry log summary (max 100 chars, aligned columns) |
 | `amfetamina` | Performance boost |
 | `db` | Show database credentials |
 | `exec <CMD>` | Execute a command on the server |
