@@ -60,12 +60,13 @@ enum Command {
     Ports,
     /// Show cloud services & stats
     Cloud,
-    /// Assign domain to server (available subdomains: *.tojest.dev, *.bieda.it, *.toadres.pl, *.byst.re)
+    /// Assign domain to server (*.tojest.dev, *.bieda.it, *.toadres.pl, *.byst.re).
+    /// If domain is omitted, the server assigns one automatically.
     Domain {
         /// Port number
         port: String,
-        /// Domain name
-        domain: String,
+        /// Domain name (omit to auto-assign)
+        domain: Option<String>,
     },
     /// Show current configuration (MIKRUS_SRV and MIKRUS_KEY)
     Config,
@@ -158,7 +159,10 @@ async fn main() -> Result<()> {
         Command::Stats { .. } => client.stats().await,
         Command::Ports => client.ports().await,
         Command::Cloud => client.cloud().await,
-        Command::Domain { port, domain } => client.domain(&port, &domain).await,
+        Command::Domain { port, domain } => {
+            let domain = domain.as_deref().unwrap_or("-");
+            client.domain(&port, domain).await
+        }
         Command::Config => unreachable!(),
     };
 
@@ -213,7 +217,21 @@ mod tests {
         match cli.command {
             Some(Command::Domain { port, domain }) => {
                 assert_eq!(port, "8080");
-                assert_eq!(domain, "example.com");
+                assert_eq!(domain.unwrap(), "example.com");
+            }
+            _ => panic!("expected Domain command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_domain_command_without_domain() {
+        let cli = Cli::parse_from([
+            "mikrus", "--srv", "srv12345", "--key", "mykey", "domain", "8080",
+        ]);
+        match cli.command {
+            Some(Command::Domain { port, domain }) => {
+                assert_eq!(port, "8080");
+                assert!(domain.is_none());
             }
             _ => panic!("expected Domain command"),
         }
