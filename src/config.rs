@@ -15,6 +15,8 @@ pub struct Config {
 pub struct Profile {
     pub srv: String,
     pub key: String,
+    #[serde(default)]
+    pub ssh: Option<String>,
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -93,6 +95,7 @@ mod tests {
             Profile {
                 srv: "srv12345".to_string(),
                 key: "abc".to_string(),
+                ssh: None,
             },
         );
         servers.insert(
@@ -100,6 +103,7 @@ mod tests {
             Profile {
                 srv: "srv67890".to_string(),
                 key: "def".to_string(),
+                ssh: None,
             },
         );
         Config { servers }
@@ -165,10 +169,16 @@ key = "abc"
 [servers.prod]
 srv = "srv67890"
 key = "def"
+ssh = "ssh root@example.com -p 12345"
 "#;
         let cfg: Config = toml::from_str(src).unwrap();
         assert_eq!(cfg.servers.len(), 2);
         assert_eq!(cfg.servers["marek245"].srv, "srv12345");
         assert_eq!(cfg.servers["prod"].key, "def");
+        assert!(cfg.servers["marek245"].ssh.is_none());
+        assert_eq!(
+            cfg.servers["prod"].ssh.as_deref(),
+            Some("ssh root@example.com -p 12345")
+        );
     }
 }

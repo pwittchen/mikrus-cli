@@ -21,7 +21,7 @@ GitHub Actions runs `cargo build --verbose` and `cargo test --verbose` on pushes
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point using `clap` (derive API). Defines the `Cli` struct and `Command` enum with 11 subcommands: `info`, `servers`, `restart`, `logs`, `amfetamina`, `db`, `exec`, `stats`, `ports`, `cloud`, `domain`. Before clap parsing, `main` loads `~/.mikrus` and calls `config::extract_profile_arg` to consume an optional leading profile name (e.g. `mikrus marek245 info`).
+- `src/main.rs` — CLI entry point using `clap` (derive API). Defines the `Cli` struct and `Command` enum with 13 subcommands: `info`, `servers`, `restart`, `logs`, `amfetamina`, `db`, `exec`, `stats`, `ports`, `cloud`, `domain`, `config`, `ssh`. Before clap parsing, `main` loads `~/.mikrus` and calls `config::extract_profile_arg` to consume an optional leading profile name (e.g. `mikrus marek245 info`). The `ssh` subcommand bypasses API credential resolution and shells out to the optional `ssh` field on the active profile.
 - `src/api.rs` — `MikrusClient` struct wrapping `reqwest::Client`. All API calls are POST requests to `https://api.mikr.us` with `srv` and `key` form params.
 - `src/config.rs` — `Config`/`Profile` structs loaded from `~/.mikrus` (TOML, `[servers.<name>]` sections). Provides `extract_profile_arg` for argv preprocessing and `config_path` for display.
 

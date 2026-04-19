@@ -58,11 +58,16 @@ Create `~/.mikrus` in TOML format:
 [servers.marek245]
 srv = "srv12345"
 key = "your-api-key"
+ssh = "ssh root@srv12345.mikr.us -p 12345"  # optional, enables `mikrus ssh`
 
 [servers.prod]
 srv = "srv67890"
 key = "another-api-key"
 ```
+
+The `ssh` field is optional. When present, `mikrus ssh` (or
+`mikrus <profile> ssh`) runs that command via the system shell, so any flags,
+ports, or identity files you put in the string are honored.
 
 If only one profile is defined, commands run against it automatically. With
 multiple profiles, pass the profile name as the first argument:
@@ -100,6 +105,7 @@ Use `--json` to output raw JSON instead of formatted text.
 | `cloud` | Show cloud services & stats |
 | `domain <PORT> [DOMAIN]` | Assign domain to server (omit domain for auto-assignment; available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re`) |
 | `config` | Show config file path, configured profiles, and active credentials |
+| `ssh` | Connect to the server via SSH (uses optional `ssh` field from profile in `~/.mikrus`) |
 
 ## Building
 

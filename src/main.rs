@@ -2,11 +2,11 @@ mod api;
 mod config;
 mod format;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use api::MikrusClient;
-use config::Config;
+use config::{Config, Profile};
 
 #[derive(Parser)]
 #[command(name = "mikrus-cli", about = "CLI tool for managing mikr.us VPS")]
@@ -68,6 +68,8 @@ enum Command {
     },
     /// Show current configuration (profiles from ~/.mikrus, active credentials)
     Config,
+    /// Connect to the server via SSH (uses `ssh` command from profile in ~/.mikrus)
+    Ssh,
 }
 
 #[derive(Args)]
@@ -128,6 +130,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if matches!(command, Command::Ssh) {
+        return run_ssh(&config, selected_profile.as_deref());
+    }
+
     let (srv, key) = resolve_credentials(&cli, &config, selected_profile.as_deref())?;
 
     let client = MikrusClient::new(srv, key);
@@ -158,6 +164,7 @@ async fn main() -> Result<()> {
         Command::Cloud => "cloud",
         Command::Domain { .. } => "domain",
         Command::Config => unreachable!(),
+        Command::Ssh => unreachable!(),
     };
 
     let result = match command {
@@ -176,6 +183,7 @@ async fn main() -> Result<()> {
             client.domain(&port, domain).await
         }
         Command::Config => unreachable!(),
+        Command::Ssh => unreachable!(),
     };
 
     match result {
@@ -247,6 +255,52 @@ fn resolve_credentials(
     );
 }
 
+fn resolve_profile<'a>(
+    config: &'a Config,
+    selected_profile: Option<&str>,
+) -> Result<(&'a str, &'a Profile)> {
+    if let Some(name) = selected_profile {
+        let (key, profile) = config
+            .servers
+            .get_key_value(name)
+            .ok_or_else(|| anyhow::anyhow!("Profile '{name}' not found in config file"))?;
+        return Ok((key.as_str(), profile));
+    }
+    if config.servers.len() == 1 {
+        let (name, profile) = config.servers.iter().next().unwrap();
+        return Ok((name.as_str(), profile));
+    }
+    if config.servers.is_empty() {
+        anyhow::bail!("No profiles configured in ~/.mikrus");
+    }
+    let names: Vec<&str> = config.servers.keys().map(|s| s.as_str()).collect();
+    anyhow::bail!(
+        "Multiple profiles configured in ~/.mikrus ({}). Specify one: mikrus <profile> ssh",
+        names.join(", ")
+    );
+}
+
+fn run_ssh(config: &Config, selected_profile: Option<&str>) -> Result<()> {
+    let (name, profile) = resolve_profile(config, selected_profile)?;
+    let ssh_cmd = profile.ssh.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No 'ssh' command defined for profile '{name}' in ~/.mikrus. \
+             Add e.g. ssh = \"ssh root@example.com -p 12345\" under [servers.{name}]."
+        )
+    })?;
+
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(ssh_cmd)
+        .status()
+        .with_context(|| format!("Failed to execute ssh command: {ssh_cmd}"))?;
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
 fn print_config(cli: &Cli, config: &Config, selected_profile: Option<&str>) {
     match config::config_path() {
         Some(p) => println!("Config file: {}", p.display()),
@@ -258,7 +312,11 @@ fn print_config(cli: &Cli, config: &Config, selected_profile: Option<&str>) {
     } else {
         println!("Profiles:");
         for (name, profile) in &config.servers {
-            println!("  {name} -> srv={}", profile.srv);
+            let ssh = match &profile.ssh {
+                Some(s) => format!(", ssh=\"{s}\""),
+                None => String::new(),
+            };
+            println!("  {name} -> srv={}{ssh}", profile.srv);
         }
     }
 
@@ -444,6 +502,7 @@ mod tests {
                 config::Profile {
                     srv: srv.to_string(),
                     key: key.to_string(),
+                    ssh: None,
                 },
             );
         }
@@ -510,5 +569,40 @@ mod tests {
         let cfg = make_config(&[("marek245", "srvB", "keyB")]);
         let err = resolve_credentials(&cli, &cfg, Some("ghost")).unwrap_err();
         assert!(err.to_string().contains("ghost"));
+    }
+
+    #[test]
+    fn test_parse_ssh_command() {
+        let cli = Cli::parse_from(["mikrus", "ssh"]);
+        assert!(matches!(cli.command, Some(Command::Ssh)));
+    }
+
+    #[test]
+    fn resolve_profile_uses_named() {
+        let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
+        let (name, profile) = resolve_profile(&cfg, Some("prod")).unwrap();
+        assert_eq!(name, "prod");
+        assert_eq!(profile.srv, "srvC");
+    }
+
+    #[test]
+    fn resolve_profile_auto_selects_single() {
+        let cfg = make_config(&[("only", "srvX", "keyX")]);
+        let (name, _) = resolve_profile(&cfg, None).unwrap();
+        assert_eq!(name, "only");
+    }
+
+    #[test]
+    fn resolve_profile_errors_when_multiple_and_none_selected() {
+        let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
+        let err = resolve_profile(&cfg, None).unwrap_err();
+        assert!(err.to_string().contains("Multiple profiles"));
+    }
+
+    #[test]
+    fn resolve_profile_errors_when_empty() {
+        let cfg = Config::default();
+        let err = resolve_profile(&cfg, None).unwrap_err();
+        assert!(err.to_string().contains("No profiles"));
     }
 }
