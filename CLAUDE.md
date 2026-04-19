@@ -21,8 +21,9 @@ GitHub Actions runs `cargo build --verbose` and `cargo test --verbose` on pushes
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point using `clap` (derive API). Defines the `Cli` struct and `Command` enum with 11 subcommands: `info`, `servers`, `restart`, `logs`, `amfetamina`, `db`, `exec`, `stats`, `ports`, `cloud`, `domain`.
+- `src/main.rs` — CLI entry point using `clap` (derive API). Defines the `Cli` struct and `Command` enum with 11 subcommands: `info`, `servers`, `restart`, `logs`, `amfetamina`, `db`, `exec`, `stats`, `ports`, `cloud`, `domain`. Before clap parsing, `main` loads `~/.mikrus` and calls `config::extract_profile_arg` to consume an optional leading profile name (e.g. `mikrus marek245 info`).
 - `src/api.rs` — `MikrusClient` struct wrapping `reqwest::Client`. All API calls are POST requests to `https://api.mikr.us` with `srv` and `key` form params.
+- `src/config.rs` — `Config`/`Profile` structs loaded from `~/.mikrus` (TOML, `[servers.<name>]` sections). Provides `extract_profile_arg` for argv preprocessing and `config_path` for display.
 
 ## Dependencies
 
@@ -34,9 +35,17 @@ GitHub Actions runs `cargo build --verbose` and `cargo test --verbose` on pushes
 
 ## Configuration
 
-Authentication is provided via CLI flags or environment variables:
-- `--srv` / `MIKRUS_SRV` — server name (e.g. `srv12345`)
-- `--key` / `MIKRUS_KEY` — API key
+Authentication resolution order (highest first):
+1. `--srv`/`--key` CLI flags or `MIKRUS_SRV`/`MIKRUS_KEY` env vars
+2. Named profile from `~/.mikrus` passed as first positional arg (`mikrus <profile> <command>`)
+3. Single-profile auto-select when `~/.mikrus` has exactly one `[servers.*]` entry
+
+Config file `~/.mikrus` (TOML):
+```toml
+[servers.marek245]
+srv = "srv12345"
+key = "your-api-key"
+```
 
 ## Git Commits
 

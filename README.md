@@ -35,19 +35,50 @@ cargo uninstall mikrus-cli
 
 ## Configuration
 
-Set your credentials via environment variables or pass them as flags:
+Credentials can come from any of three sources (highest priority first):
+
+1. **CLI flags / env vars** — `--srv`/`--key` or `MIKRUS_SRV`/`MIKRUS_KEY`
+2. **Named profile** from `~/.mikrus` — passed as the first argument (e.g. `mikrus marek245 info`)
+3. **Auto-selected profile** — when `~/.mikrus` contains exactly one profile
+
+### Env vars / flags
 
 ```bash
 export MIKRUS_SRV=srv12345
 export MIKRUS_KEY=your-api-key
 ```
 
-Or use `--srv` and `--key` flags with each command.
+Or pass `--srv`/`--key` with each command.
+
+### Config file (multiple servers)
+
+Create `~/.mikrus` in TOML format:
+
+```toml
+[servers.marek245]
+srv = "srv12345"
+key = "your-api-key"
+
+[servers.prod]
+srv = "srv67890"
+key = "another-api-key"
+```
+
+If only one profile is defined, commands run against it automatically. With
+multiple profiles, pass the profile name as the first argument:
+
+```bash
+mikrus marek245 info
+mikrus prod stats short
+```
+
+Run `mikrus config` to see the config file path, configured profiles, and
+currently active credentials.
 
 ## Usage
 
 ```bash
-mikrus [--srv <SRV>] [--key <KEY>] [--json] <COMMAND>
+mikrus [PROFILE] [--srv <SRV>] [--key <KEY>] [--json] <COMMAND>
 ```
 
 Use `--json` to output raw JSON instead of formatted text.
@@ -68,7 +99,7 @@ Use `--json` to output raw JSON instead of formatted text.
 | `ports` | Show TCP/UDP ports |
 | `cloud` | Show cloud services & stats |
 | `domain <PORT> [DOMAIN]` | Assign domain to server (omit domain for auto-assignment; available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re`) |
-| `config` | Show current configuration (MIKRUS_SRV and MIKRUS_KEY) |
+| `config` | Show config file path, configured profiles, and active credentials |
 
 ## Building
 

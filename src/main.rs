@@ -1,10 +1,12 @@
 mod api;
+mod config;
 mod format;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use api::MikrusClient;
+use config::Config;
 
 #[derive(Parser)]
 #[command(name = "mikrus-cli", about = "CLI tool for managing mikr.us VPS")]
@@ -64,7 +66,7 @@ enum Command {
         /// Domain name (omit to auto-assign)
         domain: Option<String>,
     },
-    /// Show current configuration (MIKRUS_SRV and MIKRUS_KEY)
+    /// Show current configuration (profiles from ~/.mikrus, active credentials)
     Config,
 }
 
@@ -101,9 +103,17 @@ const ASCII_LOGO: &str = r#"
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let config = config::load().unwrap_or_else(|e| {
+        eprintln!("Warning: {e:#}");
+        Config::default()
+    });
 
-    let command = match cli.command {
+    let raw_args: Vec<String> = std::env::args().collect();
+    let (selected_profile, args) = config::extract_profile_arg(&raw_args, &config);
+
+    let mut cli = Cli::parse_from(args);
+
+    let command = match cli.command.take() {
         Some(cmd) => cmd,
         None => {
             print!("{ASCII_LOGO}\n");
@@ -114,23 +124,11 @@ async fn main() -> Result<()> {
     };
 
     if matches!(command, Command::Config) {
-        match &cli.srv {
-            Some(srv) => println!("MIKRUS_SRV: {srv}"),
-            None => println!("MIKRUS_SRV: not set"),
-        }
-        match &cli.key {
-            Some(key) => println!("MIKRUS_KEY: {key}"),
-            None => println!("MIKRUS_KEY: not set"),
-        }
+        print_config(&cli, &config, selected_profile.as_deref());
         return Ok(());
     }
 
-    let srv = cli
-        .srv
-        .ok_or_else(|| anyhow::anyhow!("Server name is required. Use --srv or set MIKRUS_SRV"))?;
-    let key = cli
-        .key
-        .ok_or_else(|| anyhow::anyhow!("API key is required. Use --key or set MIKRUS_KEY"))?;
+    let (srv, key) = resolve_credentials(&cli, &config, selected_profile.as_deref())?;
 
     let client = MikrusClient::new(srv, key);
 
@@ -201,6 +199,81 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolve `(srv, key)` using priority:
+/// 1. `--srv`/`--key` flags or `MIKRUS_SRV`/`MIKRUS_KEY` env vars (clap already merged these)
+/// 2. Profile named as positional arg (e.g. `mikrus marek245 info`)
+/// 3. Config file has exactly one profile → auto-select it
+fn resolve_credentials(
+    cli: &Cli,
+    config: &Config,
+    selected_profile: Option<&str>,
+) -> Result<(String, String)> {
+    if let (Some(srv), Some(key)) = (cli.srv.clone(), cli.key.clone()) {
+        return Ok((srv, key));
+    }
+
+    if let Some(name) = selected_profile {
+        let profile = config.servers.get(name).ok_or_else(|| {
+            anyhow::anyhow!("Profile '{name}' not found in config file")
+        })?;
+        let srv = cli.srv.clone().unwrap_or_else(|| profile.srv.clone());
+        let key = cli.key.clone().unwrap_or_else(|| profile.key.clone());
+        return Ok((srv, key));
+    }
+
+    if config.servers.len() == 1 {
+        let (_, profile) = config.servers.iter().next().unwrap();
+        let srv = cli.srv.clone().unwrap_or_else(|| profile.srv.clone());
+        let key = cli.key.clone().unwrap_or_else(|| profile.key.clone());
+        return Ok((srv, key));
+    }
+
+    if config.servers.is_empty() {
+        if cli.srv.is_none() {
+            anyhow::bail!("Server name is required. Use --srv, set MIKRUS_SRV, or configure ~/.mikrus");
+        }
+        if cli.key.is_none() {
+            anyhow::bail!("API key is required. Use --key, set MIKRUS_KEY, or configure ~/.mikrus");
+        }
+        unreachable!();
+    }
+
+    let names: Vec<&str> = config.servers.keys().map(|s| s.as_str()).collect();
+    anyhow::bail!(
+        "Multiple profiles configured in ~/.mikrus ({}). Specify one: mikrus <profile> <command>",
+        names.join(", ")
+    );
+}
+
+fn print_config(cli: &Cli, config: &Config, selected_profile: Option<&str>) {
+    match config::config_path() {
+        Some(p) => println!("Config file: {}", p.display()),
+        None => println!("Config file: unknown (HOME not set)"),
+    }
+
+    if config.servers.is_empty() {
+        println!("Profiles: (none)");
+    } else {
+        println!("Profiles:");
+        for (name, profile) in &config.servers {
+            println!("  {name} -> srv={}", profile.srv);
+        }
+    }
+
+    println!();
+    if let Some(name) = selected_profile {
+        println!("Selected profile: {name}");
+    }
+    match &cli.srv {
+        Some(srv) => println!("MIKRUS_SRV: {srv}"),
+        None => println!("MIKRUS_SRV: not set"),
+    }
+    match &cli.key {
+        Some(key) => println!("MIKRUS_KEY: {key}"),
+        None => println!("MIKRUS_KEY: not set"),
+    }
 }
 
 #[cfg(test)]
@@ -361,5 +434,81 @@ mod tests {
             "mikrus", "--srv", "srv12345", "--key", "mykey", "info", "--json",
         ]);
         assert!(cli.json);
+    }
+
+    fn make_config(profiles: &[(&str, &str, &str)]) -> Config {
+        let mut servers = std::collections::BTreeMap::new();
+        for (name, srv, key) in profiles {
+            servers.insert(
+                name.to_string(),
+                config::Profile {
+                    srv: srv.to_string(),
+                    key: key.to_string(),
+                },
+            );
+        }
+        Config { servers }
+    }
+
+    fn cli_with(srv: Option<&str>, key: Option<&str>) -> Cli {
+        Cli {
+            srv: srv.map(String::from),
+            key: key.map(String::from),
+            json: false,
+            command: None,
+        }
+    }
+
+    #[test]
+    fn resolve_uses_flags_first() {
+        let cli = cli_with(Some("srvA"), Some("keyA"));
+        let cfg = make_config(&[("marek245", "srvB", "keyB")]);
+        let (srv, key) = resolve_credentials(&cli, &cfg, Some("marek245")).unwrap();
+        assert_eq!(srv, "srvA");
+        assert_eq!(key, "keyA");
+    }
+
+    #[test]
+    fn resolve_uses_named_profile() {
+        let cli = cli_with(None, None);
+        let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
+        let (srv, key) = resolve_credentials(&cli, &cfg, Some("prod")).unwrap();
+        assert_eq!(srv, "srvC");
+        assert_eq!(key, "keyC");
+    }
+
+    #[test]
+    fn resolve_auto_selects_single_profile() {
+        let cli = cli_with(None, None);
+        let cfg = make_config(&[("only", "srvX", "keyX")]);
+        let (srv, key) = resolve_credentials(&cli, &cfg, None).unwrap();
+        assert_eq!(srv, "srvX");
+        assert_eq!(key, "keyX");
+    }
+
+    #[test]
+    fn resolve_errors_when_multiple_profiles_and_none_selected() {
+        let cli = cli_with(None, None);
+        let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
+        let err = resolve_credentials(&cli, &cfg, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("marek245"), "error should list profiles: {msg}");
+        assert!(msg.contains("prod"));
+    }
+
+    #[test]
+    fn resolve_errors_when_no_profile_and_no_flags() {
+        let cli = cli_with(None, None);
+        let cfg = Config::default();
+        let err = resolve_credentials(&cli, &cfg, None).unwrap_err();
+        assert!(err.to_string().contains("Server name is required"));
+    }
+
+    #[test]
+    fn resolve_errors_for_unknown_named_profile() {
+        let cli = cli_with(None, None);
+        let cfg = make_config(&[("marek245", "srvB", "keyB")]);
+        let err = resolve_credentials(&cli, &cfg, Some("ghost")).unwrap_err();
+        assert!(err.to_string().contains("ghost"));
     }
 }
