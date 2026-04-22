@@ -142,6 +142,10 @@ the CLI correctly.
 /mikrus show me the logs of the varun.surf app running in the docker container
 ```
 
+```
+/mikrus what apps are tunneled via cloudflared?
+```
+
 ## API docs
 
 https://api.mikr.us/
