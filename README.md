@@ -138,6 +138,10 @@ the CLI correctly.
 /mikrus what eats the most memory on my server?
 ```
 
+```
+/mikrus show me the logs of the varun.surf app running in the docker container
+```
+
 ## API docs
 
 https://api.mikr.us/
