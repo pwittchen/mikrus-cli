@@ -24,3 +24,6 @@ target
 # Added by cargo
 
 /target
+
+# AI
+.claude/settings.local.json
