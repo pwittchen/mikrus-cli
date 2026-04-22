@@ -131,6 +131,10 @@ the CLI correctly.
 ```
 
 ```
+/mikrus show my server stats in the ascii table and draw some cool ascii charts, but not too many
+```
+
+```
 /mikrus what eats the most memory on my server?
 ```
 
