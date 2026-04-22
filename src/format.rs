@@ -62,14 +62,13 @@ fn progress_bar(percentage: f64, width: usize) -> String {
     )
 }
 
-/// Format KiB value to human-readable string.
-fn format_kib(kib: u64) -> String {
-    if kib >= 1_048_576 {
-        format!("{:.1} GB", kib as f64 / 1_048_576.0)
-    } else if kib >= 1024 {
-        format!("{:.0} MB", kib as f64 / 1024.0)
+/// Format MiB value to human-readable string.
+/// The mikr.us API returns `free -m` output, so values are already in MiB.
+fn format_mib(mib: u64) -> String {
+    if mib >= 1024 {
+        format!("{:.1} GB", mib as f64 / 1024.0)
     } else {
-        format!("{} KB", kib)
+        format!("{} MB", mib)
     }
 }
 
@@ -129,8 +128,8 @@ fn format_free_section(out: &mut String, raw: &str, truncate_width: usize) {
                             "  {:6} {}  {} / {}",
                             label,
                             bar,
-                            format_kib(used),
-                            format_kib(total)
+                            format_mib(used),
+                            format_mib(total)
                         ),
                         truncate_width,
                     );
@@ -665,44 +664,44 @@ mod tests {
     }
 
     #[test]
-    fn test_format_kib() {
-        assert_eq!(format_kib(0), "0 KB");
-        assert_eq!(format_kib(512), "512 KB");
-        assert_eq!(format_kib(1024), "1 MB");
-        assert_eq!(format_kib(262144), "256 MB");
-        assert_eq!(format_kib(1_048_576), "1.0 GB");
-        assert_eq!(format_kib(5_242_880), "5.0 GB");
+    fn test_format_mib() {
+        assert_eq!(format_mib(0), "0 MB");
+        assert_eq!(format_mib(512), "512 MB");
+        assert_eq!(format_mib(1024), "1.0 GB");
+        assert_eq!(format_mib(4352), "4.2 GB");
+        assert_eq!(format_mib(5120), "5.0 GB");
     }
 
     #[test]
     fn test_format_free_section() {
+        // mikr.us returns `free -m` output (values in MiB).
         let free_output = "\
               total        used        free      shared  buff/cache   available
-Mem:         262144      163840       32768       16384       65536       98304
-Swap:        524288       52428      471860";
+Mem:           4352        1128        3098           0         124        3223
+Swap:             0           0           0";
 
         let mut out = String::new();
         format_free_section(&mut out, free_output, 0);
         assert!(out.contains("Memory"));
         assert!(out.contains("Mem"));
         assert!(out.contains("Swap"));
-        // Mem: 163840/262144 = 62.5%
-        assert!(out.contains("62.5%"));
-        // Swap: 52428/524288 = 10.0%
-        assert!(out.contains("10.0%"));
+        // Mem: 1128/4352 = 25.9%
+        assert!(out.contains("25.9%"));
+        // Swap: 0/0 = 0%
+        assert!(out.contains("0.0%"));
         // Should have progress bars
         assert!(out.contains('['));
-        // Should show human-readable sizes
-        assert!(out.contains("160 MB"));
-        assert!(out.contains("256 MB"));
+        // Should show human-readable sizes (MiB → GB). 1128 MiB → "1.1 GB", 4352 MiB → "4.2 GB".
+        assert!(out.contains("1.1 GB"));
+        assert!(out.contains("4.2 GB"));
     }
 
     #[test]
     fn test_format_free_zero_swap() {
         let free_output = "\
               total        used        free      shared  buff/cache   available
-Mem:         262144      131072       65536       16384       65536      131072
-Swap:              0           0           0";
+Mem:           2048        1024        1024           0         256         768
+Swap:             0           0           0";
 
         let mut out = String::new();
         format_free_section(&mut out, free_output, 0);
@@ -711,7 +710,7 @@ Swap:              0           0           0";
         // Swap with total=0 should still show a bar at 0%
         assert!(out.contains("Swap"));
         assert!(out.contains("0.0%"));
-        assert!(out.contains("0 KB / 0 KB"));
+        assert!(out.contains("0 MB / 0 MB"));
     }
 
     #[test]
