@@ -124,6 +124,16 @@ open the repo in Claude Code, the skill teaches the assistant about the
 things like "restart my VPS" or "show mikrus stats short" and Claude will use
 the CLI correctly.
 
+### Examples
+
+```
+/mikrus show my server stats in the ascii table
+```
+
+```
+/mikrus what eats the most memory on my server?
+```
+
 ## API docs
 
 https://api.mikr.us/
