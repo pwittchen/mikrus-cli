@@ -115,6 +115,15 @@ cargo test --verbose
 cargo run
 ```
 
+## Claude Code skill
+
+This repo ships with a [Claude Code](https://claude.com/claude-code) skill at
+[`.claude/skills/mikrus/SKILL.md`](.claude/skills/mikrus/SKILL.md). When you
+open the repo in Claude Code, the skill teaches the assistant about the
+`mikrus` commands, credential resolution, and profile handling, so you can ask
+things like "restart my VPS" or "show mikrus stats short" and Claude will use
+the CLI correctly.
+
 ## API docs
 
 https://api.mikr.us/
