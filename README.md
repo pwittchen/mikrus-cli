@@ -128,22 +128,11 @@ the CLI correctly.
 
 ```
 /mikrus show my server stats in the ascii table
-```
-
-```
 /mikrus show my server stats in the ascii table and draw some cool ascii charts, but not too many
-```
-
-```
 /mikrus what eats the most memory on my server?
-```
-
-```
 /mikrus show me the logs of the varun.surf app running in the docker container
-```
-
-```
 /mikrus what apps are tunneled via cloudflared?
+/mikrus what is hosted on nginx?
 ```
 
 ## API docs
