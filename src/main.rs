@@ -1,6 +1,7 @@
 mod api;
 mod config;
 mod format;
+mod status;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -70,6 +71,8 @@ enum Command {
     Config,
     /// Connect to the server via SSH (uses `ssh` command from profile in ~/.mikrus)
     Ssh,
+    /// Show mikr.us infrastructure status (https://status.mikr.us)
+    Status,
 }
 
 #[derive(Args)]
@@ -134,6 +137,10 @@ async fn main() -> Result<()> {
         return run_ssh(&config, selected_profile.as_deref());
     }
 
+    if matches!(command, Command::Status) {
+        return run_status(&cli, &config, selected_profile.as_deref()).await;
+    }
+
     let (srv, key) = resolve_credentials(&cli, &config, selected_profile.as_deref())?;
 
     let client = MikrusClient::new(srv, key);
@@ -165,6 +172,7 @@ async fn main() -> Result<()> {
         Command::Domain { .. } => "domain",
         Command::Config => unreachable!(),
         Command::Ssh => unreachable!(),
+        Command::Status => unreachable!(),
     };
 
     let result = match command {
@@ -184,6 +192,7 @@ async fn main() -> Result<()> {
         }
         Command::Config => unreachable!(),
         Command::Ssh => unreachable!(),
+        Command::Status => unreachable!(),
     };
 
     match result {
@@ -299,6 +308,44 @@ fn run_ssh(config: &Config, selected_profile: Option<&str>) -> Result<()> {
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+async fn run_status(cli: &Cli, config: &Config, selected_profile: Option<&str>) -> Result<()> {
+    let client = status::StatusClient::new();
+    let value = client.fetch().await?;
+
+    if cli.json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+
+    let user_srvs = collect_user_srvs(cli, config, selected_profile);
+    let colorize = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    print!("{}", format::format_status(&value, &user_srvs, colorize));
+    Ok(())
+}
+
+/// Gather every srv name we should highlight on the status page:
+/// the explicit `--srv` flag, the selected profile, or — if none was selected —
+/// every profile in the config file.
+fn collect_user_srvs(cli: &Cli, config: &Config, selected_profile: Option<&str>) -> Vec<String> {
+    let mut srvs: Vec<String> = Vec::new();
+    if let Some(srv) = &cli.srv {
+        srvs.push(srv.clone());
+    }
+    match selected_profile {
+        Some(name) => {
+            if let Some(p) = config.servers.get(name) {
+                srvs.push(p.srv.clone());
+            }
+        }
+        None => {
+            for p in config.servers.values() {
+                srvs.push(p.srv.clone());
+            }
+        }
+    }
+    srvs
 }
 
 fn print_config(cli: &Cli, config: &Config, selected_profile: Option<&str>) {
@@ -575,6 +622,38 @@ mod tests {
     fn test_parse_ssh_command() {
         let cli = Cli::parse_from(["mikrus", "ssh"]);
         assert!(matches!(cli.command, Some(Command::Ssh)));
+    }
+
+    #[test]
+    fn test_parse_status_command() {
+        let cli = Cli::parse_from(["mikrus", "status"]);
+        assert!(matches!(cli.command, Some(Command::Status)));
+    }
+
+    #[test]
+    fn collect_user_srvs_uses_flag_when_set() {
+        let cli = cli_with(Some("srv99"), None);
+        let cfg = make_config(&[("p", "srv01", "k")]);
+        let srvs = collect_user_srvs(&cli, &cfg, Some("p"));
+        assert!(srvs.contains(&"srv99".to_string()));
+        assert!(srvs.contains(&"srv01".to_string()));
+    }
+
+    #[test]
+    fn collect_user_srvs_named_profile_only() {
+        let cli = cli_with(None, None);
+        let cfg = make_config(&[("p1", "srv01", "k"), ("p2", "srv02", "k")]);
+        let srvs = collect_user_srvs(&cli, &cfg, Some("p2"));
+        assert_eq!(srvs, vec!["srv02".to_string()]);
+    }
+
+    #[test]
+    fn collect_user_srvs_all_profiles_when_none_selected() {
+        let cli = cli_with(None, None);
+        let cfg = make_config(&[("p1", "srv01", "k"), ("p2", "srv02", "k")]);
+        let srvs = collect_user_srvs(&cli, &cfg, None);
+        assert!(srvs.contains(&"srv01".to_string()));
+        assert!(srvs.contains(&"srv02".to_string()));
     }
 
     #[test]

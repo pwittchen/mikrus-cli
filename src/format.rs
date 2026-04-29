@@ -528,6 +528,129 @@ pub fn format_db(value: &Value) -> String {
     out
 }
 
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_BLUE: &str = "\x1b[34m";
+const ANSI_GRAY: &str = "\x1b[90m";
+const ANSI_BOLD: &str = "\x1b[1m";
+
+/// Map an Uptime Kuma status code to a (color, label) pair.
+/// 0 = down, 1 = up, 2 = pending, 3 = maintenance, anything else = unknown.
+fn status_color_label(status: Option<i64>) -> (&'static str, &'static str) {
+    match status {
+        Some(1) => (ANSI_GREEN, "up"),
+        Some(0) => (ANSI_RED, "down"),
+        Some(2) => (ANSI_YELLOW, "pending"),
+        Some(3) => (ANSI_BLUE, "maintenance"),
+        _ => (ANSI_GRAY, "unknown"),
+    }
+}
+
+/// Render a colored "●" dot for the given status code.
+fn status_dot(status: Option<i64>, colorize: bool) -> String {
+    let (color, _) = status_color_label(status);
+    if colorize {
+        format!("{color}\u{25CF}{ANSI_RESET}")
+    } else {
+        "\u{25CF}".to_string()
+    }
+}
+
+/// Look up the most recent heartbeat status for a given monitor id.
+fn last_heartbeat_status(
+    heartbeats: Option<&serde_json::Map<String, Value>>,
+    monitor_id: i64,
+) -> Option<i64> {
+    heartbeats?
+        .get(&monitor_id.to_string())?
+        .as_array()?
+        .last()?
+        .get("status")?
+        .as_i64()
+}
+
+/// Format the status page response: groups of monitors with colored status dots.
+/// Monitors whose name matches any entry in `user_srvs` (case-insensitive, trimmed)
+/// are bolded and prefixed with `→`.
+pub fn format_status(value: &Value, user_srvs: &[String], colorize: bool) -> String {
+    let user_set: std::collections::HashSet<String> = user_srvs
+        .iter()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let groups = match value.get("publicGroupList").and_then(|v| v.as_array()) {
+        Some(g) => g,
+        None => return "(no status data)\n".to_string(),
+    };
+
+    let heartbeats = value.get("heartbeatList").and_then(|v| v.as_object());
+
+    let mut out = String::new();
+
+    if let Some(incident) = value.get("incident") {
+        if !incident.is_null() {
+            if let Some(title) = incident.get("title").and_then(|v| v.as_str()) {
+                out.push_str(&format!("Incident: {title}\n\n"));
+            }
+        }
+    }
+
+    for (gi, group) in groups.iter().enumerate() {
+        let group_name = group
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let monitors = match group.get("monitorList").and_then(|v| v.as_array()) {
+            Some(m) => m,
+            None => continue,
+        };
+
+        if gi > 0 {
+            out.push('\n');
+        }
+        if colorize {
+            out.push_str(&format!("{ANSI_BOLD}{group_name}{ANSI_RESET}\n"));
+        } else {
+            out.push_str(&format!("{group_name}\n"));
+        }
+
+        let max_name = monitors
+            .iter()
+            .filter_map(|m| m.get("name").and_then(|v| v.as_str()))
+            .map(|n| n.trim().chars().count())
+            .max()
+            .unwrap_or(0);
+
+        for monitor in monitors {
+            let id = monitor.get("id").and_then(|v| v.as_i64());
+            let raw_name = monitor.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = raw_name.trim();
+            let status_code = id.and_then(|i| last_heartbeat_status(heartbeats, i));
+            let dot = status_dot(status_code, colorize);
+            let (_, label) = status_color_label(status_code);
+
+            let is_user = user_set.contains(&name.to_lowercase());
+            let marker = if is_user { "→" } else { " " };
+            let display_name = if is_user && colorize {
+                format!("{ANSI_BOLD}{name}{ANSI_RESET}")
+            } else {
+                name.to_string()
+            };
+            let pad: String = std::iter::repeat(' ')
+                .take(max_name.saturating_sub(name.chars().count()))
+                .collect();
+
+            out.push_str(&format!("  {marker} {dot} {display_name}{pad}  {label}\n"));
+        }
+    }
+
+    out
+}
+
 /// Format a JSON API response as human-readable text.
 ///
 /// Special cases:
@@ -1298,6 +1421,138 @@ root         1  5.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
             .collect();
         assert_eq!(second_pipe[0], second_pipe[1], "second pipe not aligned: {:?}", lines);
         assert_eq!(second_pipe[1], second_pipe[2], "second pipe not aligned: {:?}", lines);
+    }
+
+    // --- Tests for status formatting ---
+
+    fn sample_status() -> Value {
+        json!({
+            "publicGroupList": [
+                {
+                    "id": 2,
+                    "name": "Serwery",
+                    "monitorList": [
+                        {"id": 9, "name": "srv07"},
+                        {"id": 10, "name": "srv08"},
+                        {"id": 11, "name": "srv19 "}
+                    ]
+                },
+                {
+                    "id": 3,
+                    "name": "Usługi",
+                    "monitorList": [
+                        {"id": 99, "name": "panel"}
+                    ]
+                }
+            ],
+            "heartbeatList": {
+                "9":  [{"status": 1, "time": "t", "msg": "", "ping": 25}],
+                "10": [{"status": 0, "time": "t", "msg": "", "ping": null}],
+                "11": [{"status": 2, "time": "t", "msg": "", "ping": 1}]
+            },
+            "incident": null
+        })
+    }
+
+    #[test]
+    fn test_format_status_groups_and_dots() {
+        let val = sample_status();
+        let out = format_status(&val, &[], false);
+        assert!(out.contains("Serwery"));
+        assert!(out.contains("Usługi"));
+        assert!(out.contains("srv07"));
+        assert!(out.contains("up"));
+        assert!(out.contains("down"));
+        assert!(out.contains("pending"));
+        assert!(out.contains("unknown"));
+        assert!(out.contains('\u{25CF}'));
+    }
+
+    #[test]
+    fn test_format_status_colorizes_dots() {
+        let val = sample_status();
+        let out = format_status(&val, &[], true);
+        assert!(out.contains(ANSI_GREEN), "missing green: {out}");
+        assert!(out.contains(ANSI_RED), "missing red: {out}");
+        assert!(out.contains(ANSI_YELLOW), "missing yellow: {out}");
+        assert!(out.contains(ANSI_GRAY), "missing gray (panel has no heartbeat)");
+    }
+
+    #[test]
+    fn test_format_status_marks_user_server() {
+        let val = sample_status();
+        let user = vec!["srv07".to_string()];
+        let out = format_status(&val, &user, false);
+        let line = out
+            .lines()
+            .find(|l| l.contains("srv07"))
+            .expect("srv07 line");
+        assert!(line.contains("→"), "user server should have arrow: {line}");
+        let other = out.lines().find(|l| l.contains("srv08")).unwrap();
+        assert!(!other.contains("→"), "non-user server should not have arrow: {other}");
+    }
+
+    #[test]
+    fn test_format_status_marks_user_server_case_insensitive_trimmed() {
+        let val = sample_status();
+        // Match the trailing-space monitor "srv19 " using trimmed/upper input.
+        let user = vec!["SRV19".to_string()];
+        let out = format_status(&val, &user, false);
+        let line = out
+            .lines()
+            .find(|l| l.contains("srv19"))
+            .expect("srv19 line");
+        assert!(line.contains("→"), "trimmed/case-insensitive match expected: {line}");
+    }
+
+    #[test]
+    fn test_format_status_handles_missing_groups() {
+        let val = json!({"publicGroupList": null, "heartbeatList": {}});
+        let out = format_status(&val, &[], false);
+        assert!(out.contains("no status data"));
+    }
+
+    #[test]
+    fn test_format_status_unknown_when_no_heartbeats() {
+        let val = json!({
+            "publicGroupList": [{"id": 1, "name": "G", "monitorList": [{"id": 1, "name": "x"}]}],
+            "heartbeatList": {}
+        });
+        let out = format_status(&val, &[], false);
+        assert!(out.contains("unknown"));
+    }
+
+    #[test]
+    fn test_format_status_shows_incident_title() {
+        let val = json!({
+            "publicGroupList": [],
+            "heartbeatList": {},
+            "incident": {"title": "Database outage"}
+        });
+        let out = format_status(&val, &[], false);
+        assert!(out.contains("Incident: Database outage"));
+    }
+
+    #[test]
+    fn test_format_status_aligns_monitor_names() {
+        let val = json!({
+            "publicGroupList": [{
+                "id": 1, "name": "G",
+                "monitorList": [
+                    {"id": 1, "name": "a"},
+                    {"id": 2, "name": "longer-name"}
+                ]
+            }],
+            "heartbeatList": {
+                "1": [{"status": 1}],
+                "2": [{"status": 1}]
+            }
+        });
+        let out = format_status(&val, &[], false);
+        let lines: Vec<&str> = out.lines().filter(|l| l.contains("up")).collect();
+        assert_eq!(lines.len(), 2);
+        let up_positions: Vec<usize> = lines.iter().map(|l| l.find("up").unwrap()).collect();
+        assert_eq!(up_positions[0], up_positions[1], "labels not aligned: {:?}", lines);
     }
 
     #[test]

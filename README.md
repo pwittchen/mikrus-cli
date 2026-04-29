@@ -106,6 +106,7 @@ Use `--json` to output raw JSON instead of formatted text.
 | `domain <PORT> [DOMAIN]` | Assign domain to server (omit domain for auto-assignment; available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re`) |
 | `config` | Show config file path, configured profiles, and active credentials |
 | `ssh` | Connect to the server via SSH (uses optional `ssh` field from profile in `~/.mikrus`) |
+| `status` | Show mikr.us infrastructure status from [status.mikr.us](https://status.mikr.us/status/mikrus) — colored dots per monitor (green=up, red=down, yellow=pending, blue=maintenance, gray=unknown); your configured server(s) are marked with `→` |
 
 ## Building
 

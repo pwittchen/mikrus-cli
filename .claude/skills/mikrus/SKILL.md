@@ -52,6 +52,7 @@ ask which profile to target rather than guessing.
 | `domain <PORT> [DOMAIN]` | Assign domain to a port — omit DOMAIN for auto-assignment. Available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re` |
 | `config` | Show config path, profiles, active credentials |
 | `ssh` | SSH into the server (uses optional `ssh` field from the active profile) |
+| `status` | mikr.us infrastructure status from `status.mikr.us` — colored dots per monitor; user's configured server(s) marked with `→`. No auth. |
 
 ## SSH
 
