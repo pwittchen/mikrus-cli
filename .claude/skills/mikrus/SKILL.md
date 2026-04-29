@@ -52,7 +52,8 @@ ask which profile to target rather than guessing.
 | `domain <PORT> [DOMAIN]` | Assign domain to a port — omit DOMAIN for auto-assignment. Available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re` |
 | `config` | Show config path, profiles, active credentials |
 | `ssh` | SSH into the server (uses optional `ssh` field from the active profile) |
-| `status` | mikr.us infrastructure status from `status.mikr.us` — colored dots per monitor; user's configured server(s) marked with `→`. No auth. |
+| `status` | mikr.us infrastructure status from `status.mikr.us` — colored dots per monitor. Auto-detects the user's hosting server by reading the `<h1>` of `<srv>.mikrus.xyz`, prints a `Your server: srvNN.mikr.us (<user_srv>)` header, and marks the matching monitor with `→`. Status page itself needs no auth; the host lookup uses no credentials either. |
+| `status short` | One line per matched user server (e.g. `● srv30  up`); skips the full grid. Best when the user just wants to know if their VPS is up. |
 
 ## SSH
 
@@ -65,8 +66,9 @@ has no `ssh` field, the command errors with instructions to add one.
 
 - Prefer `--json` when you need to extract a specific field or feed the output
   into further processing.
-- `stats short` / `logs short` are usually the right default for humans —
-  they're easier to read than the full output.
+- `stats short` / `logs short` / `status short` are usually the right default
+  for humans — they're easier to read than the full output. Reach for
+  `status short` when the user just wants a yes/no answer about their VPS.
 - Destructive-ish commands (`restart`, `domain`, `exec`) affect the live VPS.
   Confirm with the user before running them unless the user has just asked for
   exactly that action.
