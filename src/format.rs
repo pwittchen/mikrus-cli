@@ -598,6 +598,15 @@ pub fn format_status(value: &Value, user_srvs: &[String], colorize: bool) -> Str
         }
     }
 
+    let max_name = groups
+        .iter()
+        .filter_map(|g| g.get("monitorList").and_then(|v| v.as_array()))
+        .flat_map(|monitors| monitors.iter())
+        .filter_map(|m| m.get("name").and_then(|v| v.as_str()))
+        .map(|n| n.trim().chars().count())
+        .max()
+        .unwrap_or(0);
+
     for (gi, group) in groups.iter().enumerate() {
         let group_name = group
             .get("name")
@@ -617,13 +626,6 @@ pub fn format_status(value: &Value, user_srvs: &[String], colorize: bool) -> Str
         } else {
             out.push_str(&format!("{group_name}\n"));
         }
-
-        let max_name = monitors
-            .iter()
-            .filter_map(|m| m.get("name").and_then(|v| v.as_str()))
-            .map(|n| n.trim().chars().count())
-            .max()
-            .unwrap_or(0);
 
         for monitor in monitors {
             let id = monitor.get("id").and_then(|v| v.as_i64());
@@ -648,6 +650,72 @@ pub fn format_status(value: &Value, user_srvs: &[String], colorize: bool) -> Str
         }
     }
 
+    out
+}
+
+/// Condensed status output: one line per monitor matching `user_srvs`.
+/// Format: `● srvNN  up`. Returns an informative message if no match was found.
+pub fn format_status_short(value: &Value, user_srvs: &[String], colorize: bool) -> String {
+    let user_set: std::collections::HashSet<String> = user_srvs
+        .iter()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if user_set.is_empty() {
+        return "(no server selected — configure a profile in ~/.mikrus or pass --srv)\n".to_string();
+    }
+
+    let groups = match value.get("publicGroupList").and_then(|v| v.as_array()) {
+        Some(g) => g,
+        None => return "(no status data)\n".to_string(),
+    };
+    let heartbeats = value.get("heartbeatList").and_then(|v| v.as_object());
+
+    let mut matched: Vec<(String, Option<i64>)> = Vec::new();
+    for group in groups {
+        let monitors = match group.get("monitorList").and_then(|v| v.as_array()) {
+            Some(m) => m,
+            None => continue,
+        };
+        for monitor in monitors {
+            let name = monitor
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if user_set.contains(&name.to_lowercase()) {
+                let id = monitor.get("id").and_then(|v| v.as_i64());
+                let status = id.and_then(|i| last_heartbeat_status(heartbeats, i));
+                matched.push((name.to_string(), status));
+            }
+        }
+    }
+
+    if matched.is_empty() {
+        return "(no matching monitors on the status page)\n".to_string();
+    }
+
+    let max_name = matched
+        .iter()
+        .map(|(n, _)| n.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let mut out = String::new();
+    for (name, status_code) in &matched {
+        let dot = status_dot(*status_code, colorize);
+        let (_, label) = status_color_label(*status_code);
+        let pad: String = std::iter::repeat(' ')
+            .take(max_name.saturating_sub(name.chars().count()))
+            .collect();
+        let display_name = if colorize {
+            format!("{ANSI_BOLD}{name}{ANSI_RESET}")
+        } else {
+            name.clone()
+        };
+        out.push_str(&format!("{dot} {display_name}{pad}  {label}\n"));
+    }
     out
 }
 
@@ -1553,6 +1621,76 @@ root         1  5.0  0.5  19356  1404 ?        Ss   Jan01   0:05 /sbin/init";
         assert_eq!(lines.len(), 2);
         let up_positions: Vec<usize> = lines.iter().map(|l| l.find("up").unwrap()).collect();
         assert_eq!(up_positions[0], up_positions[1], "labels not aligned: {:?}", lines);
+    }
+
+    #[test]
+    fn test_format_status_short_single_match() {
+        let val = sample_status();
+        let user = vec!["srv07".to_string()];
+        let out = format_status_short(&val, &user, false);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 1, "expected single line, got: {:?}", lines);
+        assert!(lines[0].contains("srv07"));
+        assert!(lines[0].contains("up"));
+        assert!(lines[0].contains('\u{25CF}'));
+        // Must not contain non-matching server names.
+        assert!(!out.contains("srv08"));
+        assert!(!out.contains("panel"));
+    }
+
+    #[test]
+    fn test_format_status_short_multiple_matches() {
+        let val = sample_status();
+        let user = vec!["srv07".to_string(), "srv08".to_string()];
+        let out = format_status_short(&val, &user, false);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(out.contains("srv07"));
+        assert!(out.contains("up"));
+        assert!(out.contains("srv08"));
+        assert!(out.contains("down"));
+    }
+
+    #[test]
+    fn test_format_status_short_no_match() {
+        let val = sample_status();
+        let user = vec!["srv99".to_string()];
+        let out = format_status_short(&val, &user, false);
+        assert!(out.contains("no matching monitors"), "{out}");
+    }
+
+    #[test]
+    fn test_format_status_short_empty_user_list() {
+        let val = sample_status();
+        let out = format_status_short(&val, &[], false);
+        assert!(out.contains("no server selected"), "{out}");
+    }
+
+    #[test]
+    fn test_format_status_short_case_insensitive_trimmed() {
+        let val = sample_status();
+        // Match "srv19 " (trailing space) using uppercase trimmed input.
+        let user = vec!["SRV19".to_string()];
+        let out = format_status_short(&val, &user, false);
+        assert!(out.contains("srv19"));
+        assert!(out.contains("pending"));
+    }
+
+    #[test]
+    fn test_format_status_short_colorizes() {
+        let val = sample_status();
+        let user = vec!["srv07".to_string()];
+        let out = format_status_short(&val, &user, true);
+        assert!(out.contains(ANSI_GREEN), "missing green dot color: {out}");
+        assert!(out.contains(ANSI_BOLD), "name should be bold: {out}");
+    }
+
+    #[test]
+    fn test_format_status_short_no_status_data() {
+        let val = json!({"publicGroupList": null, "heartbeatList": {}});
+        let user = vec!["srv07".to_string()];
+        let out = format_status_short(&val, &user, false);
+        assert!(out.contains("no status data"), "{out}");
     }
 
     #[test]

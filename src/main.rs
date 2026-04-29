@@ -72,7 +72,10 @@ enum Command {
     /// Connect to the server via SSH (uses `ssh` command from profile in ~/.mikrus)
     Ssh,
     /// Show mikr.us infrastructure status (https://status.mikr.us)
-    Status,
+    Status {
+        #[command(subcommand)]
+        sub: Option<StatusCommand>,
+    },
 }
 
 #[derive(Args)]
@@ -94,6 +97,12 @@ enum LogsCommand {
 #[derive(Subcommand, Debug)]
 enum StatsCommand {
     /// Shortcut for --truncate 100
+    Short,
+}
+
+#[derive(Subcommand, Debug)]
+enum StatusCommand {
+    /// Show only the user's own server status (one line per matched server)
     Short,
 }
 
@@ -137,8 +146,9 @@ async fn main() -> Result<()> {
         return run_ssh(&config, selected_profile.as_deref());
     }
 
-    if matches!(command, Command::Status) {
-        return run_status(&cli, &config, selected_profile.as_deref()).await;
+    if let Command::Status { sub } = &command {
+        let short = matches!(sub, Some(StatusCommand::Short));
+        return run_status(&cli, &config, selected_profile.as_deref(), short).await;
     }
 
     let (srv, key) = resolve_credentials(&cli, &config, selected_profile.as_deref())?;
@@ -172,7 +182,7 @@ async fn main() -> Result<()> {
         Command::Domain { .. } => "domain",
         Command::Config => unreachable!(),
         Command::Ssh => unreachable!(),
-        Command::Status => unreachable!(),
+        Command::Status { .. } => unreachable!(),
     };
 
     let result = match command {
@@ -192,7 +202,7 @@ async fn main() -> Result<()> {
         }
         Command::Config => unreachable!(),
         Command::Ssh => unreachable!(),
-        Command::Status => unreachable!(),
+        Command::Status { .. } => unreachable!(),
     };
 
     match result {
@@ -310,7 +320,12 @@ fn run_ssh(config: &Config, selected_profile: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-async fn run_status(cli: &Cli, config: &Config, selected_profile: Option<&str>) -> Result<()> {
+async fn run_status(
+    cli: &Cli,
+    config: &Config,
+    selected_profile: Option<&str>,
+    short: bool,
+) -> Result<()> {
     let client = status::StatusClient::new();
     let value = client.fetch().await?;
 
@@ -320,8 +335,45 @@ async fn run_status(cli: &Cli, config: &Config, selected_profile: Option<&str>) 
     }
 
     let user_srvs = collect_user_srvs(cli, config, selected_profile);
+
+    // Resolve each user srv (e.g. "srv12345") to its physical hosting server (e.g. "srv07")
+    // by reading the H1 of the user's default subdomain page. Failures are non-fatal.
+    let mut resolved: Vec<(String, Option<String>)> = Vec::new();
+    for user_srv in &user_srvs {
+        match client.resolve_hosting_server(user_srv).await {
+            Ok(host) => resolved.push((user_srv.clone(), Some(host))),
+            Err(e) => {
+                eprintln!("Warning: could not resolve hosting server for {user_srv}: {e:#}");
+                resolved.push((user_srv.clone(), None));
+            }
+        }
+    }
+
+    let mut highlight: Vec<String> = Vec::with_capacity(user_srvs.len() * 2);
+    for (user_srv, host) in &resolved {
+        highlight.push(user_srv.clone());
+        if let Some(h) = host {
+            highlight.push(h.clone());
+        }
+    }
+
     let colorize = std::io::IsTerminal::is_terminal(&std::io::stdout());
-    print!("{}", format::format_status(&value, &user_srvs, colorize));
+
+    if short {
+        print!("{}", format::format_status_short(&value, &highlight, colorize));
+        return Ok(());
+    }
+
+    for (user_srv, host) in &resolved {
+        if let Some(h) = host {
+            println!("Your server: {h}.mikr.us ({user_srv})");
+        }
+    }
+    if resolved.iter().any(|(_, h)| h.is_some()) {
+        println!();
+    }
+
+    print!("{}", format::format_status(&value, &highlight, colorize));
     Ok(())
 }
 
@@ -627,7 +679,18 @@ mod tests {
     #[test]
     fn test_parse_status_command() {
         let cli = Cli::parse_from(["mikrus", "status"]);
-        assert!(matches!(cli.command, Some(Command::Status)));
+        assert!(matches!(cli.command, Some(Command::Status { sub: None })));
+    }
+
+    #[test]
+    fn test_parse_status_short_command() {
+        let cli = Cli::parse_from(["mikrus", "status", "short"]);
+        match cli.command {
+            Some(Command::Status { sub }) => {
+                assert!(matches!(sub, Some(StatusCommand::Short)));
+            }
+            _ => panic!("expected Status command with short"),
+        }
     }
 
     #[test]
