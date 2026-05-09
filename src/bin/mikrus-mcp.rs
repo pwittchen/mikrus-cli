@@ -131,7 +131,10 @@ impl MikrusServer {
         Ok(MikrusClient::new(srv, key))
     }
 
-    #[tool(description = "Show information about the mikr.us VPS (server ID, expiry, parameters).")]
+    #[tool(
+        description = "Show information about the mikr.us VPS (server ID, expiry, parameters).",
+        annotations(read_only_hint = true)
+    )]
     async fn info(
         &self,
         Parameters(args): Parameters<ProfileArg>,
@@ -144,7 +147,10 @@ impl MikrusServer {
         Ok(json_result(&value))
     }
 
-    #[tool(description = "List all VPS servers owned by the user on mikr.us.")]
+    #[tool(
+        description = "List all VPS servers owned by the user on mikr.us.",
+        annotations(read_only_hint = true)
+    )]
     async fn servers(
         &self,
         Parameters(args): Parameters<ProfileArg>,
@@ -158,7 +164,8 @@ impl MikrusServer {
     }
 
     #[tool(
-        description = "Restart the mikr.us VPS. Side-effectful: causes a brief outage. Confirm with the user before invoking."
+        description = "Restart the mikr.us VPS. Side-effectful: causes a brief outage. Confirm with the user before invoking.",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false)
     )]
     async fn restart(
         &self,
@@ -173,7 +180,8 @@ impl MikrusServer {
     }
 
     #[tool(
-        description = "Show server log entries. Omit `id` for the recent list, or pass a specific log entry ID."
+        description = "Show server log entries. Omit `id` for the recent list, or pass a specific log entry ID.",
+        annotations(read_only_hint = true)
     )]
     async fn logs(
         &self,
@@ -188,7 +196,8 @@ impl MikrusServer {
     }
 
     #[tool(
-        description = "Trigger the mikr.us 'amfetamina' performance boost on the VPS (rate-limited by the provider)."
+        description = "Trigger the mikr.us 'amfetamina' performance boost on the VPS (rate-limited by the provider).",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false)
     )]
     async fn amfetamina(
         &self,
@@ -202,7 +211,10 @@ impl MikrusServer {
         Ok(json_result(&value))
     }
 
-    #[tool(description = "Show MySQL/MariaDB database credentials for the VPS.")]
+    #[tool(
+        description = "Show MySQL/MariaDB database credentials for the VPS.",
+        annotations(read_only_hint = true)
+    )]
     async fn db(
         &self,
         Parameters(args): Parameters<ProfileArg>,
@@ -216,7 +228,8 @@ impl MikrusServer {
     }
 
     #[tool(
-        description = "Execute an arbitrary shell command on the VPS via the mikr.us API. Side-effectful: runs as the VPS user. Confirm with the user before invoking destructive commands."
+        description = "Execute an arbitrary shell command on the VPS via the mikr.us API. Side-effectful: runs as the VPS user. Confirm with the user before invoking destructive commands.",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false)
     )]
     async fn exec(
         &self,
@@ -230,7 +243,10 @@ impl MikrusServer {
         Ok(json_result(&value))
     }
 
-    #[tool(description = "Show disk, memory, and uptime statistics for the VPS.")]
+    #[tool(
+        description = "Show disk, memory, and uptime statistics for the VPS.",
+        annotations(read_only_hint = true)
+    )]
     async fn stats(
         &self,
         Parameters(args): Parameters<ProfileArg>,
@@ -243,7 +259,10 @@ impl MikrusServer {
         Ok(json_result(&value))
     }
 
-    #[tool(description = "Show TCP/UDP ports configured on the VPS.")]
+    #[tool(
+        description = "Show TCP/UDP ports configured on the VPS.",
+        annotations(read_only_hint = true)
+    )]
     async fn ports(
         &self,
         Parameters(args): Parameters<ProfileArg>,
@@ -256,7 +275,10 @@ impl MikrusServer {
         Ok(json_result(&value))
     }
 
-    #[tool(description = "Show mikr.us cloud services and their stats for the user.")]
+    #[tool(
+        description = "Show mikr.us cloud services and their stats for the user.",
+        annotations(read_only_hint = true)
+    )]
     async fn cloud(
         &self,
         Parameters(args): Parameters<ProfileArg>,
@@ -270,7 +292,8 @@ impl MikrusServer {
     }
 
     #[tool(
-        description = "Assign a domain to a port on the VPS. Omit `domain` for auto-assignment from `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re`. Side-effectful: changes routing."
+        description = "Assign a domain to a port on the VPS. Omit `domain` for auto-assignment from `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re`. Side-effectful: changes routing.",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = true)
     )]
     async fn domain(
         &self,
@@ -286,7 +309,8 @@ impl MikrusServer {
     }
 
     #[tool(
-        description = "Show mikr.us infrastructure status from https://status.mikr.us — monitor groups, latest heartbeats, and uptime per host. Public endpoint, no credentials required."
+        description = "Show mikr.us infrastructure status from https://status.mikr.us — monitor groups, latest heartbeats, and uptime per host. Public endpoint, no credentials required.",
+        annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         let value = StatusClient::new().fetch().await.map_err(api_err)?;
@@ -294,7 +318,8 @@ impl MikrusServer {
     }
 
     #[tool(
-        description = "List profiles defined in `~/.mikrus` (names and srv values). Useful before calling other tools that take a `profile` argument."
+        description = "List profiles defined in `~/.mikrus` (names and srv values). Useful before calling other tools that take a `profile` argument.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_profiles(&self) -> Result<CallToolResult, McpError> {
         let profiles: Vec<Value> = self
