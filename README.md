@@ -117,6 +117,133 @@ cargo test --verbose
 cargo run
 ```
 
+## MCP server
+
+The repo also ships `mikrus-mcp`, a [Model Context
+Protocol](https://modelcontextprotocol.io/) server that exposes the same
+operations as the CLI as MCP tools over stdio, so MCP-aware clients can drive
+your mikr.us VPS through it.
+
+### Build & install
+
+`cargo install --path .` installs both binaries: `mikrus` and `mikrus-mcp`
+(into `~/.cargo/bin/`).
+
+### Tools
+
+| Tool | Description |
+|------|-------------|
+| `info` | Show server information |
+| `servers` | List user's VPS servers |
+| `restart` | Restart the VPS *(side-effectful)* |
+| `logs` | Show log entries (optional `id`) |
+| `amfetamina` | Performance boost *(side-effectful)* |
+| `db` | Show database credentials |
+| `exec` | Run a shell command on the VPS *(side-effectful)* |
+| `stats` | Disk/memory/uptime statistics |
+| `ports` | TCP/UDP ports |
+| `cloud` | Cloud services & stats |
+| `domain` | Assign domain to port *(side-effectful)* |
+| `status` | mikr.us infrastructure status (public, no auth) |
+| `list_profiles` | List profiles defined in `~/.mikrus` |
+
+Tools that talk to the authenticated API accept an optional `profile` argument
+naming an entry in `~/.mikrus`. Credentials are resolved with the same priority
+as the CLI: `MIKRUS_SRV`/`MIKRUS_KEY` env vars first, then the named profile,
+then the only profile if there's exactly one configured.
+
+### Adding to Claude Code
+
+After `cargo install --path .` (so `mikrus-mcp` is on your `PATH`), register
+the server with Claude Code's `mcp add` command. Pick a scope:
+
+```bash
+# User scope — available in every Claude Code session on this machine.
+claude mcp add -s user mikrus -- mikrus-mcp
+
+# Project scope — written to ./.mcp.json so teammates pick it up via git.
+claude mcp add -s project mikrus -- mikrus-mcp
+
+# Local scope — only this project on this machine (the default).
+claude mcp add mikrus -- mikrus-mcp
+```
+
+If `mikrus-mcp` isn't on your `PATH`, give the absolute path instead:
+
+```bash
+claude mcp add -s user mikrus -- /Users/you/.cargo/bin/mikrus-mcp
+```
+
+#### Using `~/.mikrus` for credentials (recommended)
+
+The MCP server reads `~/.mikrus` on startup using the same logic as the CLI,
+so the simplest setup is to put your profiles there and let the server pick
+them up — no env vars needed in the Claude Code config.
+
+1. Create `~/.mikrus` (TOML, see [Configuration](#configuration) above):
+
+   ```toml
+   [servers.marek245]
+   srv = "srv12345"
+   key = "your-api-key"
+
+   [servers.prod]
+   srv = "srv67890"
+   key = "another-api-key"
+   ```
+
+2. Add the server with no env vars:
+
+   ```bash
+   claude mcp add -s user mikrus -- mikrus-mcp
+   ```
+
+3. In a Claude Code session:
+   - **One profile in `~/.mikrus`** — it's auto-selected; just ask *"show my
+     mikrus stats"*.
+   - **Multiple profiles** — Claude Code passes the profile name as the
+     `profile` tool argument. Tell Claude which one (*"use the prod profile
+     and show stats"*) or run the `list_profiles` tool first to see them.
+
+The server reads `~/.mikrus` at startup, so if you edit the file, restart
+Claude Code (or run `claude mcp remove mikrus && claude mcp add ...` again)
+to pick up the changes.
+
+#### Using env vars instead
+
+If you'd rather not keep credentials in `~/.mikrus`, pass them as env vars in
+the `mcp add` command:
+
+```bash
+claude mcp add -s user mikrus \
+  -e MIKRUS_SRV=srv12345 \
+  -e MIKRUS_KEY=your-api-key \
+  -- mikrus-mcp
+```
+
+Env vars take priority over `~/.mikrus`.
+
+Verify the server is connected:
+
+```bash
+claude mcp list           # shows configured servers + status
+claude mcp get mikrus     # shows full config for this server
+```
+
+Inside a Claude Code session, run `/mcp` to inspect the live connection and
+the tools the server is advertising. Once it's green, you can ask things like
+*"show my mikrus stats"*, *"what ports are open?"*, or *"restart my VPS"* and
+Claude Code will call the corresponding tools.
+
+To remove the server:
+
+```bash
+claude mcp remove mikrus
+```
+
+The server logs to stderr (controllable via `RUST_LOG`, default `info`); the
+JSON-RPC protocol uses stdin/stdout, so don't pipe anything else into it.
+
 ## Claude Code skill
 
 This repo ships with a [Claude Code](https://claude.com/claude-code) skill at

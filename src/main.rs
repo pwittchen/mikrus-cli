@@ -1,13 +1,9 @@
-mod api;
-mod config;
-mod format;
-mod status;
-
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
-use api::MikrusClient;
-use config::{Config, Profile};
+use mikrus_cli::api::MikrusClient;
+use mikrus_cli::config::{Config, Profile};
+use mikrus_cli::{config, format, status};
 
 #[derive(Parser)]
 #[command(name = "mikrus-cli", about = "CLI tool for managing mikr.us VPS")]
