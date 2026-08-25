@@ -23,7 +23,7 @@ GitHub Actions runs `cargo build --verbose` and `cargo test --verbose` on pushes
 
 - `src/main.rs` — CLI entry point using `clap` (derive API). Defines the `Cli` struct and `Command` enum with 14 subcommands: `info`, `servers`, `restart`, `logs`, `amfetamina`, `db`, `exec`, `stats`, `ports`, `cloud`, `domain`, `config`, `ssh`, `status`. Before clap parsing, `main` loads `~/.mikrus` and calls `config::extract_profile_arg` to consume an optional leading profile name (e.g. `mikrus marek245 info`). The `ssh` and `status` subcommands bypass API credential resolution; `ssh` shells out to the optional `ssh` field on the active profile and `status` calls the public `status.mikr.us` endpoint.
 - `src/api.rs` — `MikrusClient` struct wrapping `reqwest::Client`. All API calls are POST requests to `https://api.mikr.us` with `srv` and `key` form params.
-- `src/config.rs` — `Config`/`Profile` structs loaded from `~/.mikrus` (TOML, `[servers.<name>]` sections). Provides `extract_profile_arg` for argv preprocessing and `config_path` for display.
+- `src/config.rs` — `Config`/`Profile` structs loaded from `~/.mikrus` (TOML, `[servers.<name>]` sections), then merged with a project-local `./.mikrus` whose profiles override same-named global ones. Provides `extract_profile_arg` for argv preprocessing plus `config_path`/`local_config_path` for display.
 - `src/status.rs` — `StatusClient` struct that fetches the public mikr.us status page (`https://status.mikr.us/api/status-page/mikrus` and `/heartbeat/mikrus`) and merges monitor groups + latest heartbeats into a single JSON value. No auth.
 
 ## Dependencies
@@ -40,6 +40,8 @@ Authentication resolution order (highest first):
 1. `--srv`/`--key` CLI flags or `MIKRUS_SRV`/`MIKRUS_KEY` env vars
 2. Named profile from `~/.mikrus` passed as first positional arg (`mikrus <profile> <command>`)
 3. Single-profile auto-select when `~/.mikrus` has exactly one `[servers.*]` entry
+
+Profiles are loaded from `~/.mikrus` and then merged with `./.mikrus` from the current working directory (if present); a locally defined profile replaces the global entry of the same name.
 
 Config file `~/.mikrus` (TOML):
 ```toml

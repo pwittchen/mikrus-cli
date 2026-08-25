@@ -38,8 +38,12 @@ cargo uninstall mikrus-cli
 Credentials can come from any of three sources (highest priority first):
 
 1. **CLI flags / env vars** — `--srv`/`--key` or `MIKRUS_SRV`/`MIKRUS_KEY`
-2. **Named profile** from `~/.mikrus` — passed as the first argument (e.g. `mikrus marek245 info`)
-3. **Auto-selected profile** — when `~/.mikrus` contains exactly one profile
+2. **Named profile** from the config file — passed as the first argument (e.g. `mikrus marek245 info`)
+3. **Auto-selected profile** — when the config file contains exactly one profile
+
+Profiles are read from `~/.mikrus` and, if present, from `.mikrus` in the
+current directory, which overrides the global one — see
+[Local config file](#local-config-file-per-project).
 
 ### Env vars / flags
 
@@ -77,8 +81,32 @@ mikrus marek245 info
 mikrus prod stats short
 ```
 
-Run `mikrus config` to see the config file path, configured profiles, and
+Run `mikrus config` to see the config file paths, configured profiles, and
 currently active credentials.
+
+### Local config file (per project)
+
+If a `.mikrus` file exists in the current working directory, it is loaded on top
+of the global `~/.mikrus`. Profiles are merged by name:
+
+- a profile defined locally **overrides** the global profile with the same name
+  (the whole entry is replaced — `srv`, `key` and `ssh`),
+- profiles that exist only globally are still available,
+- profiles that exist only locally are added.
+
+This lets you keep shared credentials in `~/.mikrus` and point a specific
+project at a different server:
+
+```toml
+# ./.mikrus — overrides the global "prod" profile in this directory only
+[servers.prod]
+srv = "srv99999"
+key = "project-api-key"
+ssh = "ssh root@srv99999.mikr.us -p 99999"
+```
+
+Remember to add `.mikrus` to `.gitignore` so project credentials don't end up in
+the repository.
 
 ## Usage
 
@@ -208,6 +236,10 @@ them up — no env vars needed in the Claude Code config.
 The server reads `~/.mikrus` at startup, so if you edit the file, restart
 Claude Code (or run `claude mcp remove mikrus && claude mcp add ...` again)
 to pick up the changes.
+
+Like the CLI, the server also merges a `.mikrus` file from its working
+directory (the directory Claude Code was started in) on top of `~/.mikrus`, so
+a project-local config wins there too.
 
 #### Using env vars instead
 

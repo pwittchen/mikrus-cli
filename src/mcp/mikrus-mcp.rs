@@ -336,6 +336,7 @@ impl MikrusServer {
             .collect();
         let payload = serde_json::json!({
             "config_path": config::config_path().map(|p| p.display().to_string()),
+            "local_config_path": config::local_config_path().map(|p| p.display().to_string()),
             "env_srv_set": self.env_srv.is_some(),
             "env_key_set": self.env_key.is_some(),
             "profiles": profiles,

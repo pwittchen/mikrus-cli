@@ -19,22 +19,52 @@ pub struct Profile {
     pub ssh: Option<String>,
 }
 
+/// Global config file: `~/.mikrus`.
 pub fn config_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(CONFIG_FILENAME))
 }
 
+/// Project-local config file: `./.mikrus` in the current working directory.
+/// Returns `None` when it does not exist, or when it is the same file as the global one.
+pub fn local_config_path() -> Option<PathBuf> {
+    let path = std::env::current_dir().ok()?.join(CONFIG_FILENAME);
+    if !path.exists() {
+        return None;
+    }
+    if config_path().is_some_and(|global| global == path) {
+        return None;
+    }
+    Some(path)
+}
+
+/// Loads `~/.mikrus` and then merges `./.mikrus` on top of it.
+/// A profile defined in the local file replaces the global profile of the same name;
+/// profiles that only exist globally are kept.
 pub fn load() -> Result<Config> {
-    let Some(path) = config_path() else {
-        return Ok(Config::default());
+    let mut config = match config_path() {
+        Some(path) => read_config(&path)?,
+        None => Config::default(),
     };
+    if let Some(path) = local_config_path() {
+        let local = read_config(&path)?;
+        merge(&mut config, local);
+    }
+    Ok(config)
+}
+
+/// Merges `local` into `global`, with local profiles taking precedence.
+fn merge(global: &mut Config, local: Config) {
+    global.servers.extend(local.servers);
+}
+
+fn read_config(path: &PathBuf) -> Result<Config> {
     if !path.exists() {
         return Ok(Config::default());
     }
-    let contents = std::fs::read_to_string(&path)
+    let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file {}", path.display()))?;
-    let config: Config = toml::from_str(&contents)
-        .with_context(|| format!("Failed to parse config file {}", path.display()))?;
-    Ok(config)
+    toml::from_str(&contents)
+        .with_context(|| format!("Failed to parse config file {}", path.display()))
 }
 
 /// If the first positional argument matches a profile name, split it out.
@@ -157,6 +187,52 @@ mod tests {
         let (profile, rest) = extract_profile_arg(&args, &cfg);
         assert!(profile.is_none());
         assert_eq!(rest, args);
+    }
+
+    #[test]
+    fn local_config_overrides_global_profiles() {
+        let mut global = sample_config();
+        let local: Config = toml::from_str(
+            r#"
+[servers.marek245]
+srv = "srv99999"
+key = "local-key"
+ssh = "ssh root@local -p 10022"
+"#,
+        )
+        .unwrap();
+
+        merge(&mut global, local);
+
+        // Overridden by the local file.
+        assert_eq!(global.servers["marek245"].srv, "srv99999");
+        assert_eq!(global.servers["marek245"].key, "local-key");
+        assert_eq!(
+            global.servers["marek245"].ssh.as_deref(),
+            Some("ssh root@local -p 10022")
+        );
+        // Global-only profile is preserved.
+        assert_eq!(global.servers["prod"].srv, "srv67890");
+        assert_eq!(global.servers.len(), 2);
+    }
+
+    #[test]
+    fn local_config_adds_new_profiles() {
+        let mut global = sample_config();
+        let local: Config = toml::from_str(
+            r#"
+[servers.staging]
+srv = "srv11111"
+key = "ghi"
+"#,
+        )
+        .unwrap();
+
+        merge(&mut global, local);
+
+        assert_eq!(global.servers.len(), 3);
+        assert_eq!(global.servers["staging"].srv, "srv11111");
+        assert_eq!(global.servers["marek245"].srv, "srv12345");
     }
 
     #[test]

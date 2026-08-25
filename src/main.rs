@@ -401,6 +401,9 @@ fn print_config(cli: &Cli, config: &Config, selected_profile: Option<&str>) {
         Some(p) => println!("Config file: {}", p.display()),
         None => println!("Config file: unknown (HOME not set)"),
     }
+    if let Some(p) = config::local_config_path() {
+        println!("Local config file: {} (overrides global profiles)", p.display());
+    }
 
     if config.servers.is_empty() {
         println!("Profiles: (none)");
