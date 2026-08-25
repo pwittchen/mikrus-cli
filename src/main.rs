@@ -644,56 +644,59 @@ fn run_ctx_switch(loaded: &LoadedConfig, name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Interactive picker for `mikrus ctx switch` without an explicit name.
-/// Returns `None` when the user cancels with an empty line.
+/// Interactive picker for `mikrus ctx switch` without an explicit name:
+/// arrows to move, Enter to confirm, Esc to cancel (Ctrl-C aborts the process).
+/// Returns `None` when the user cancels.
 fn prompt_for_server(
     loaded: &LoadedConfig,
     names: &[&str],
     current: Option<&str>,
 ) -> Result<Option<String>> {
-    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+        || !std::io::IsTerminal::is_terminal(&std::io::stderr())
+    {
         anyhow::bail!(
             "Not running interactively. Pass the name: mikrus ctx switch <{}>",
             names.join("|")
         );
     }
 
+    let items = server_menu_items(loaded, names, current);
+    let start = current
+        .and_then(|c| names.iter().position(|name| *name == c))
+        .unwrap_or(0);
+
+    let selection = dialoguer::Select::new()
+        .with_prompt("Select the default server (↑/↓ to move, Enter to confirm, Esc to cancel)")
+        .items(&items)
+        .default(start)
+        .interact_opt();
+
+    let selection = match selection {
+        Ok(selection) => selection,
+        // Ctrl-C arrives as an interrupted read — treat it as a cancel, like Esc.
+        Err(dialoguer::Error::IO(e)) if e.kind() == std::io::ErrorKind::Interrupted => None,
+        Err(e) => return Err(anyhow::Error::new(e).context("Failed to read the selection")),
+    };
+
+    Ok(selection.map(|index| names[index].to_string()))
+}
+
+/// One menu line per server: name, srv, and a marker on the current default.
+fn server_menu_items(loaded: &LoadedConfig, names: &[&str], current: Option<&str>) -> Vec<String> {
     let width = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
-    println!("Available servers:");
-    for (i, name) in names.iter().enumerate() {
-        let srv = &loaded.merged.servers[*name].srv;
-        let note = if current == Some(*name) {
-            "  (current default)"
-        } else {
-            ""
-        };
-        println!("  {}) {name:<width$}  {srv}{note}", i + 1);
-    }
-    print!("Select server [1-{}] (empty to cancel): ", names.len());
-    std::io::Write::flush(&mut std::io::stdout()).ok();
-
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
-        .context("Failed to read from stdin")?;
-    let input = line.trim();
-
-    if input.is_empty() {
-        return Ok(None);
-    }
-    if let Ok(index) = input.parse::<usize>() {
-        let name = names
-            .get(index.wrapping_sub(1))
-            .ok_or_else(|| anyhow::anyhow!("Invalid selection: {index}"))?;
-        return Ok(Some((*name).to_string()));
-    }
-    if names.contains(&input) {
-        return Ok(Some(input.to_string()));
-    }
-    anyhow::bail!(
-        "Invalid selection: '{input}'. Pick a number 1-{} or one of: {}",
-        names.len(),
-        names.join(", ")
-    );
+    names
+        .iter()
+        .map(|name| {
+            let srv = &loaded.merged.servers[*name].srv;
+            let note = if current == Some(*name) {
+                "  (current default)"
+            } else {
+                ""
+            };
+            format!("{name:<width$}  {srv}{note}")
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1066,6 +1069,23 @@ mod tests {
         assert!(row.starts_with("  * prod"), "row: {row}");
         assert!(row.contains("srv67890"));
         assert!(row.contains("(default)"));
+    }
+
+    #[test]
+    fn server_menu_items_align_names_and_mark_current_default() {
+        let loaded = LoadedConfig {
+            merged: make_config(&[("marek245", "srv12345", "k"), ("prod", "srv67890", "k")]),
+            ..LoadedConfig::default()
+        };
+        let names: Vec<&str> = loaded.merged.servers.keys().map(|s| s.as_str()).collect();
+        let items = server_menu_items(&loaded, &names, Some("prod"));
+        assert_eq!(
+            items,
+            vec![
+                "marek245  srv12345".to_string(),
+                "prod      srv67890  (current default)".to_string(),
+            ]
+        );
     }
 
     #[test]

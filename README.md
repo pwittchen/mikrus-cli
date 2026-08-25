@@ -108,13 +108,24 @@ first one in the list is used and `ctx` says so.
 
 `mikrus ctx switch <name>` makes another server the default and writes
 `default = true` into the config file that defines it (comments and formatting
-are preserved). Without a name it prints a numbered list and asks which one to
-pick:
+are preserved). Without a name it opens an interactive menu — `↑`/`↓` to move
+(starting on the current default), `Enter` to confirm, `Esc` to cancel:
 
 ```bash
 mikrus ctx switch prod   # switch directly
-mikrus ctx switch        # pick interactively
+mikrus ctx switch        # pick from the arrow-key menu
 ```
+
+```
+$ mikrus ctx switch
+? Select the default server (↑/↓ to move, Enter to confirm, Esc to cancel)
+    marek245  srv12345
+  > prod      srv67890  (current default)
+    staging   srv11111
+```
+
+The menu needs a terminal; when stdin isn't interactive (a script, a pipe),
+`ctx switch` asks for an explicit name instead.
 
 With only one server configured there is nothing to switch, and `ctx switch`
 says so instead of changing anything.
@@ -175,7 +186,7 @@ Use `--json` to output raw JSON instead of formatted text.
 | `domain <PORT> [DOMAIN]` | Assign domain to server (omit domain for auto-assignment; available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re`) |
 | `config` | Show config file path, configured profiles, and active credentials |
 | `ctx` | List configured servers (project-local config first) and show which one is the default |
-| `ctx switch [NAME]` | Make another server the default and save it in the config file (omit NAME to pick interactively; with one server there's nothing to switch) |
+| `ctx switch [NAME]` | Make another server the default and save it in the config file (omit NAME to pick from an arrow-key menu; with one server there's nothing to switch) |
 | `ssh` | Connect to the server via SSH (uses optional `ssh` field from profile in `~/.mikrus`) |
 | `status` | Show mikr.us infrastructure status from [status.mikr.us](https://status.mikr.us/status/mikrus) — colored dots per monitor (green=up, red=down, yellow=pending, blue=maintenance, gray=unknown). Your hosting server is auto-detected by reading the `<h1>` of `<srv>.mikrus.xyz` (e.g. `srv30.mikr.us`); a `Your server: …` header is printed and the matching monitor is marked with `→` |
 | `status short` | Print one line per matched user server (e.g. `● srv30  up`) — skips the full grid |

@@ -54,7 +54,7 @@ target rather than relying on the default.
 | `domain <PORT> [DOMAIN]` | Assign domain to a port — omit DOMAIN for auto-assignment. Available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re` |
 | `config` | Show config path, profiles, active credentials |
 | `ctx` | List configured servers (project-local `.mikrus` first) and show the default one |
-| `ctx switch [NAME]` | Make another server the default, saved as `default = true` in the config file. Without NAME it prompts interactively — always pass NAME when running it non-interactively. |
+| `ctx switch [NAME]` | Make another server the default, saved as `default = true` in the config file. Without NAME it opens an arrow-key menu that needs a terminal — always pass NAME when running it yourself. |
 | `ssh` | SSH into the server (uses optional `ssh` field from the active profile) |
 | `status` | mikr.us infrastructure status from `status.mikr.us` — colored dots per monitor. Auto-detects the user's hosting server by reading the `<h1>` of `<srv>.mikrus.xyz`, prints a `Your server: srvNN.mikr.us (<user_srv>)` header, and marks the matching monitor with `→`. Status page itself needs no auth; the host lookup uses no credentials either. |
 | `status short` | One line per matched user server (e.g. `● srv30  up`); skips the full grid. Best when the user just wants to know if their VPS is up. |

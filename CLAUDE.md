@@ -21,7 +21,7 @@ GitHub Actions runs `cargo build --verbose` and `cargo test --verbose` on pushes
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point using `clap` (derive API). Defines the `Cli` struct and `Command` enum with 15 subcommands: `info`, `servers`, `restart`, `logs`, `amfetamina`, `db`, `exec`, `stats`, `ports`, `cloud`, `domain`, `config`, `ctx`, `ssh`, `status`. Before clap parsing, `main` loads `~/.mikrus` and calls `config::extract_profile_arg` to consume an optional leading profile name (e.g. `mikrus marek245 info`). The `ctx`, `ssh` and `status` subcommands bypass API credential resolution; `ctx` prints/switches the default server, `ssh` shells out to the optional `ssh` field on the active profile and `status` calls the public `status.mikr.us` endpoint.
+- `src/main.rs` — CLI entry point using `clap` (derive API). Defines the `Cli` struct and `Command` enum with 15 subcommands: `info`, `servers`, `restart`, `logs`, `amfetamina`, `db`, `exec`, `stats`, `ports`, `cloud`, `domain`, `config`, `ctx`, `ssh`, `status`. Before clap parsing, `main` loads `~/.mikrus` and calls `config::extract_profile_arg` to consume an optional leading profile name (e.g. `mikrus marek245 info`). The `ctx`, `ssh` and `status` subcommands bypass API credential resolution; `ctx` prints the servers and switches the default one (`ctx switch` without a name opens a `dialoguer::Select` menu, so it needs a terminal), `ssh` shells out to the optional `ssh` field on the active profile and `status` calls the public `status.mikr.us` endpoint.
 - `src/api.rs` — `MikrusClient` struct wrapping `reqwest::Client`. All API calls are POST requests to `https://api.mikr.us` with `srv` and `key` form params.
 - `src/config.rs` — `Config`/`Profile` structs loaded from `~/.mikrus` (TOML, `[servers.<name>]` sections), then merged with a project-local `./.mikrus` whose profiles override same-named global ones. `load_all` returns a `LoadedConfig` that keeps the global and local configs apart (needed by `ctx`) alongside the merged one; `effective_default` resolves the default profile (explicit `default = true`, local file winning over global, else the first profile) and `write_default_flag` moves the `default = true` marker inside a config file via `toml_edit`, preserving comments and formatting. Also provides `extract_profile_arg` for argv preprocessing plus `config_path`/`local_config_path` for display.
 - `src/status.rs` — `StatusClient` struct that fetches the public mikr.us status page (`https://status.mikr.us/api/status-page/mikrus` and `/heartbeat/mikrus`) and merges monitor groups + latest heartbeats into a single JSON value. No auth.
@@ -32,6 +32,8 @@ GitHub Actions runs `cargo build --verbose` and `cargo test --verbose` on pushes
 - `reqwest` (json) — HTTP client
 - `tokio` (macros, rt-multi-thread) — async runtime
 - `serde` / `serde_json` — serialization
+- `toml` / `toml_edit` — config parsing; `toml_edit` rewrites `~/.mikrus` in place (`ctx switch`) without losing comments
+- `dialoguer` (no default features) — arrow-key menu for `mikrus ctx switch`
 - `anyhow` — error handling
 
 ## Configuration
