@@ -85,6 +85,69 @@ impl LoadedConfig {
         }
         self.global_path.as_deref()
     }
+
+    /// Whether `name` comes from the project-local config file.
+    pub fn is_local(&self, name: &str) -> bool {
+        self.local
+            .as_ref()
+            .is_some_and(|local| local.servers.contains_key(name))
+    }
+
+    /// Marks `name` as the default server, persisting the change to the config file
+    /// that defines it. Used by `mikrus ctx switch` and the `ctx_switch` MCP tool.
+    pub fn switch_default(&self, name: &str) -> Result<SwitchOutcome> {
+        if !self.merged.servers.contains_key(name) {
+            let names: Vec<&str> = self.merged.servers.keys().map(String::as_str).collect();
+            anyhow::bail!(
+                "Server '{name}' is not defined in the config. Available: {}",
+                names.join(", ")
+            );
+        }
+
+        let path = self
+            .defining_path(name)
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine the config file for '{name}'"))?
+            .to_path_buf();
+
+        if !write_default_flag(&path, Some(name))? {
+            anyhow::bail!(
+                "Server '{name}' is not defined in {} — config file changed in the meantime?",
+                path.display()
+            );
+        }
+
+        let local_path = self.local_path.as_deref();
+        let wrote_local = local_path == Some(path.as_path());
+
+        // Marked the global file while the local one still marks another server: the local
+        // marker wins here, so clear it — otherwise the switch would have no visible effect.
+        let mut cleared_local = None;
+        if !wrote_local {
+            if let (Some(local), Some(local_path)) = (&self.local, local_path) {
+                if local.explicit_default().is_some() {
+                    write_default_flag(local_path, None)?;
+                    cleared_local = Some(local_path.to_path_buf());
+                }
+            }
+        }
+
+        Ok(SwitchOutcome {
+            path,
+            wrote_local,
+            cleared_local,
+        })
+    }
+}
+
+/// What [`LoadedConfig::switch_default`] changed on disk.
+#[derive(Debug)]
+pub struct SwitchOutcome {
+    /// Config file the `default = true` marker was written to.
+    pub path: PathBuf,
+    /// Whether that file is the project-local `./.mikrus` rather than `~/.mikrus`.
+    pub wrote_local: bool,
+    /// Project-local config whose competing `default = true` had to be cleared, if any.
+    pub cleared_local: Option<PathBuf>,
 }
 
 /// Global config file: `~/.mikrus`.
@@ -502,6 +565,164 @@ key = "local"
             cfg.defining_path("marek245").unwrap(),
             Path::new("/home/u/.mikrus")
         );
+    }
+
+    #[test]
+    fn is_local_only_for_locally_defined_profiles() {
+        let cfg = loaded(
+            GLOBAL_SRC,
+            Some(
+                r#"
+[servers.prod]
+srv = "srv99999"
+key = "local"
+"#,
+            ),
+        );
+        assert!(cfg.is_local("prod"));
+        assert!(!cfg.is_local("marek245"));
+        assert!(!loaded(GLOBAL_SRC, None).is_local("prod"));
+    }
+
+    /// Config files on disk, wired into a `LoadedConfig` the way `load_all` would.
+    fn loaded_from_files(dir: &Path, global_src: &str, local_src: Option<&str>) -> LoadedConfig {
+        let global_path = dir.join("global.mikrus");
+        std::fs::write(&global_path, global_src).unwrap();
+        let local_path = local_src.map(|src| {
+            let path = dir.join("local.mikrus");
+            std::fs::write(&path, src).unwrap();
+            path
+        });
+
+        let global: Config = toml::from_str(global_src).unwrap();
+        let local: Option<Config> = local_src.map(|s| toml::from_str(s).unwrap());
+        let mut merged = Config {
+            servers: global.servers.clone(),
+        };
+        if let Some(local) = &local {
+            merge(
+                &mut merged,
+                Config {
+                    servers: local.servers.clone(),
+                },
+            );
+        }
+        LoadedConfig {
+            merged,
+            global,
+            global_path: Some(global_path),
+            local,
+            local_path,
+        }
+    }
+
+    fn read_back(path: &Path) -> Config {
+        toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn switch_default_marks_the_global_profile() {
+        let dir = temp_dir("switch-global");
+        let cfg = loaded_from_files(&dir, GLOBAL_SRC, None);
+
+        let outcome = cfg.switch_default("marek245").unwrap();
+
+        assert!(!outcome.wrote_local);
+        assert!(outcome.cleared_local.is_none());
+        assert_eq!(outcome.path, dir.join("global.mikrus"));
+        assert_eq!(read_back(&outcome.path).explicit_default(), Some("marek245"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn switch_default_writes_to_the_local_file_for_a_local_profile() {
+        let dir = temp_dir("switch-local");
+        let cfg = loaded_from_files(
+            &dir,
+            GLOBAL_SRC,
+            Some(
+                r#"
+[servers.staging]
+srv = "srv11111"
+key = "ghi"
+"#,
+            ),
+        );
+
+        let outcome = cfg.switch_default("staging").unwrap();
+
+        assert!(outcome.wrote_local);
+        assert_eq!(outcome.path, dir.join("local.mikrus"));
+        assert_eq!(read_back(&outcome.path).explicit_default(), Some("staging"));
+        // The global file keeps its own marker — it just no longer wins here.
+        assert_eq!(
+            read_back(&dir.join("global.mikrus")).explicit_default(),
+            Some("prod")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn switch_default_clears_a_competing_local_marker() {
+        let dir = temp_dir("switch-clears-local");
+        let cfg = loaded_from_files(
+            &dir,
+            GLOBAL_SRC,
+            Some(
+                r#"
+[servers.staging]
+srv = "srv11111"
+key = "ghi"
+default = true
+"#,
+            ),
+        );
+
+        // Switching to a global-only profile while the local file marks `staging`.
+        let outcome = cfg.switch_default("marek245").unwrap();
+
+        assert!(!outcome.wrote_local);
+        assert_eq!(
+            outcome.cleared_local.as_deref(),
+            Some(dir.join("local.mikrus").as_path())
+        );
+        assert_eq!(read_back(&outcome.path).explicit_default(), Some("marek245"));
+        assert!(
+            read_back(&dir.join("local.mikrus"))
+                .explicit_default()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn switch_default_rejects_an_unknown_profile() {
+        let dir = temp_dir("switch-unknown");
+        let cfg = loaded_from_files(&dir, GLOBAL_SRC, None);
+
+        let err = cfg.switch_default("ghost").unwrap_err().to_string();
+        assert!(err.contains("ghost"), "{err}");
+        assert!(err.contains("marek245"), "{err}");
+        // Nothing was touched.
+        assert_eq!(
+            read_back(&dir.join("global.mikrus")).explicit_default(),
+            Some("prod")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mikrus-cli-test-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]

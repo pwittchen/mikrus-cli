@@ -228,6 +228,8 @@ your mikr.us VPS through it.
 | `domain` | Assign domain to port *(side-effectful)* |
 | `status` | mikr.us infrastructure status (public, no auth) |
 | `list_profiles` | List profiles defined in `~/.mikrus` |
+| `ctx` | Show the configured servers and which one is the default |
+| `ctx_switch` | Switch the default server *(side-effectful: rewrites the config)* |
 
 Tools that talk to the authenticated API accept an optional `profile` argument
 naming an entry in `~/.mikrus`. Credentials are resolved with the same priority
@@ -236,6 +238,28 @@ then the only profile if there's exactly one configured, then the profile marked
 `default = true`. Unlike the CLI, the server never falls back to the *first*
 profile — with several unmarked profiles it asks for the `profile` argument
 instead of guessing.
+
+### Context tools
+
+`ctx` and `ctx_switch` mirror the `mikrus ctx` command, so you can inspect and
+change the default server from a chat instead of a terminal:
+
+- **`ctx`** reports every configured profile with its `srv`, which file defines
+  it (global `~/.mikrus` or project-local `./.mikrus`), whether a local entry
+  overrides a global one, and which profile is the default — plus whether that
+  default is explicit (`default = true`) or just the first entry. It also flags
+  when `MIKRUS_SRV`/`MIKRUS_KEY` are set, since env vars outrank every profile.
+- **`ctx_switch`** takes a `name` and writes `default = true` onto that profile
+  in the file that defines it, clearing the marker from the others — exactly
+  what `mikrus ctx switch <name>` does, comments and formatting preserved. It
+  returns the resulting context, so the effect is visible in the reply. There's
+  no interactive picker here: the `name` argument is required. Since this
+  changes which server *every other tool* talks to by default, it's marked
+  side-effectful — confirm before invoking.
+
+Both tools re-read the config files on every call, so edits to `~/.mikrus` are
+picked up without restarting the server, and a switch applies to the very next
+tool call.
 
 ### Adding to Claude Code
 
@@ -288,11 +312,15 @@ them up — no env vars needed in the Claude Code config.
      mikrus stats"*.
    - **Multiple profiles** — Claude Code passes the profile name as the
      `profile` tool argument. Tell Claude which one (*"use the prod profile
-     and show stats"*) or run the `list_profiles` tool first to see them.
+     and show stats"*) or run the `ctx` tool first to see them. To stop
+     repeating yourself, pick a default once (*"switch my default mikrus
+     server to prod"*, i.e. the `ctx_switch` tool) — later calls with no
+     `profile` argument then use it.
 
 The server reads `~/.mikrus` at startup, so if you edit the file, restart
 Claude Code (or run `claude mcp remove mikrus && claude mcp add ...` again)
-to pick up the changes.
+to pick up the changes — except for the `ctx` and `ctx_switch` tools, which
+always read the current contents of the config files.
 
 Like the CLI, the server also merges a `.mikrus` file from its working
 directory (the directory Claude Code was started in) on top of `~/.mikrus`, so

@@ -602,40 +602,15 @@ fn run_ctx_switch(loaded: &LoadedConfig, name: Option<&str>) -> Result<()> {
         },
     };
 
-    let path = loaded
-        .defining_path(&target)
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine the config file for '{target}'"))?
-        .to_path_buf();
-
-    if !config::write_default_flag(&path, Some(&target))? {
-        anyhow::bail!(
-            "Server '{target}' is not defined in {} — config file changed in the meantime?",
-            path.display()
-        );
-    }
-
-    let local_path = loaded.local_path.as_deref();
-    let wrote_local = local_path == Some(path.as_path());
-
-    // Marked the global file while the local one still marks another server: the local
-    // marker wins here, so clear it — otherwise the switch would have no visible effect.
-    let mut cleared_local = None;
-    if !wrote_local {
-        if let (Some(local), Some(local_path)) = (&loaded.local, local_path) {
-            if local.explicit_default().is_some() {
-                config::write_default_flag(local_path, None)?;
-                cleared_local = Some(local_path.to_path_buf());
-            }
-        }
-    }
+    let outcome = loaded.switch_default(&target)?;
 
     let srv = &loaded.merged.servers[&target].srv;
     println!("Default server switched to '{target}' ({srv}).");
-    println!("Saved in {}", path.display());
-    if wrote_local {
+    println!("Saved in {}", outcome.path.display());
+    if outcome.wrote_local {
         println!("This is a project-local config — the global default is unchanged.");
     }
-    if let Some(cleared) = cleared_local {
+    if let Some(cleared) = outcome.cleared_local {
         println!(
             "Removed the default marker from {} so this one applies here.",
             cleared.display()

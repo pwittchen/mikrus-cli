@@ -8,7 +8,7 @@
 //! env vars, then a profile from `~/.mikrus`. Each tool also accepts an
 //! optional `profile` argument to pick a specific entry from `~/.mikrus`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use rmcp::{
@@ -24,12 +24,14 @@ use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
 use mikrus_cli::api::MikrusClient;
-use mikrus_cli::config::{self, Config};
+use mikrus_cli::config::{self, LoadedConfig};
 use mikrus_cli::status::StatusClient;
 
 #[derive(Clone)]
 struct MikrusServer {
-    config: Arc<Config>,
+    /// Config as last read from disk. `ctx` and `ctx_switch` refresh it, so a
+    /// long-running server picks up edits to `~/.mikrus` without a restart.
+    config: Arc<Mutex<Arc<LoadedConfig>>>,
     env_srv: Option<String>,
     env_key: Option<String>,
     // Used by the `#[tool_handler]` macro to dispatch tool calls.
@@ -74,19 +76,40 @@ struct DomainArgs {
     domain: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CtxSwitchArgs {
+    /// Name of the profile to make the default one. Must be one of the names
+    /// reported by `ctx`.
+    name: String,
+}
+
 #[tool_router]
 impl MikrusServer {
     fn new() -> Self {
-        let config = config::load().unwrap_or_else(|e| {
-            tracing::warn!("failed to load ~/.mikrus: {e:#}");
-            Config::default()
-        });
         Self {
-            config: Arc::new(config),
+            config: Arc::new(Mutex::new(Arc::new(load_config()))),
             env_srv: std::env::var("MIKRUS_SRV").ok(),
             env_key: std::env::var("MIKRUS_KEY").ok(),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Config as last read from disk.
+    fn loaded(&self) -> Arc<LoadedConfig> {
+        self.config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Re-read `~/.mikrus` and `./.mikrus` and return the fresh config.
+    fn reload(&self) -> Arc<LoadedConfig> {
+        let fresh = Arc::new(load_config());
+        *self
+            .config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = fresh.clone();
+        fresh
     }
 
     /// Resolve `(srv, key)` using the same priority as the CLI:
@@ -98,8 +121,10 @@ impl MikrusServer {
         if let (Some(srv), Some(key)) = (&self.env_srv, &self.env_key) {
             return Ok((srv.clone(), key.clone()));
         }
+        let loaded = self.loaded();
+        let servers = &loaded.merged.servers;
         if let Some(name) = profile {
-            let p = self.config.servers.get(name).ok_or_else(|| {
+            let p = servers.get(name).ok_or_else(|| {
                 McpError::invalid_params(
                     format!("profile '{name}' not found in ~/.mikrus"),
                     None,
@@ -107,29 +132,30 @@ impl MikrusServer {
             })?;
             return Ok((p.srv.clone(), p.key.clone()));
         }
-        if self.config.servers.len() == 1 {
-            let (_, p) = self.config.servers.iter().next().unwrap();
+        if servers.len() == 1 {
+            let (_, p) = servers.iter().next().unwrap();
             return Ok((p.srv.clone(), p.key.clone()));
         }
         // Unlike the CLI, only an explicit `default = true` is auto-selected here —
         // never the first profile, so a tool call can't silently hit the wrong server.
-        if let Some(p) = self
-            .config
-            .explicit_default()
-            .and_then(|name| self.config.servers.get(name))
+        if let Some(p) = loaded
+            .effective_default()
+            .filter(|(_, explicit)| *explicit)
+            .and_then(|(name, _)| servers.get(name))
         {
             return Ok((p.srv.clone(), p.key.clone()));
         }
-        if self.config.servers.is_empty() {
+        if servers.is_empty() {
             return Err(McpError::invalid_params(
                 "no credentials available — set MIKRUS_SRV/MIKRUS_KEY env vars or configure ~/.mikrus",
                 None,
             ));
         }
-        let names: Vec<&str> = self.config.servers.keys().map(String::as_str).collect();
+        let names: Vec<&str> = servers.keys().map(String::as_str).collect();
         Err(McpError::invalid_params(
             format!(
-                "multiple profiles configured ({}); pass `profile` argument to select one",
+                "multiple profiles configured ({}); pass `profile` argument to select one, \
+                 or mark one as the default with `ctx_switch`",
                 names.join(", ")
             ),
             None,
@@ -328,12 +354,13 @@ impl MikrusServer {
     }
 
     #[tool(
-        description = "List profiles defined in `~/.mikrus` (names and srv values). Useful before calling other tools that take a `profile` argument.",
+        description = "List profiles defined in `~/.mikrus` (names and srv values). Useful before calling other tools that take a `profile` argument. Use `ctx` instead for the full picture (default server, which config file defines what).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_profiles(&self) -> Result<CallToolResult, McpError> {
-        let profiles: Vec<Value> = self
-            .config
+        let loaded = self.loaded();
+        let profiles: Vec<Value> = loaded
+            .merged
             .servers
             .iter()
             .map(|(name, p)| {
@@ -354,6 +381,142 @@ impl MikrusServer {
         });
         Ok(json_result(&payload))
     }
+
+    #[tool(
+        name = "ctx",
+        description = "Show the current mikr.us context, like `mikrus ctx`: every configured server profile, which config file defines it (global `~/.mikrus` or project-local `./.mikrus`), and which one is the default that credential-less calls use. Re-reads the config files, so it also reflects edits made since the server started.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn ctx(&self) -> Result<CallToolResult, McpError> {
+        Ok(json_result(&ctx_payload(
+            &self.reload(),
+            self.env_srv.is_some(),
+            self.env_key.is_some(),
+            None,
+        )))
+    }
+
+    #[tool(
+        name = "ctx_switch",
+        description = "Switch the default mikr.us server, like `mikrus ctx switch <name>`: marks the named profile with `default = true` in the config file that defines it (clearing the marker from the others) so later calls without a `profile` argument use it. Side-effectful: rewrites `~/.mikrus` or `./.mikrus` on disk and changes which server every other tool talks to by default — confirm with the user first. Call `ctx` for the available names.",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true)
+    )]
+    async fn ctx_switch(
+        &self,
+        Parameters(args): Parameters<CtxSwitchArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        // Work off a fresh read: the file may have changed since startup, and the
+        // marker must land in whichever file defines the profile right now.
+        let loaded = self.reload();
+        let previous = loaded
+            .effective_default()
+            .map(|(name, _)| name.to_string());
+
+        let outcome = loaded
+            .switch_default(&args.name)
+            .map_err(|e| McpError::invalid_params(format!("{e:#}"), None))?;
+
+        let mut notes = Vec::new();
+        if outcome.wrote_local {
+            notes.push(
+                "Written to the project-local config — the global default is unchanged."
+                    .to_string(),
+            );
+        }
+        if let Some(cleared) = &outcome.cleared_local {
+            notes.push(format!(
+                "Removed the default marker from {} so this one applies here.",
+                cleared.display()
+            ));
+        }
+        if self.env_srv.is_some() && self.env_key.is_some() {
+            notes.push(
+                "MIKRUS_SRV/MIKRUS_KEY are set and take priority, so tool calls keep using \
+                 those credentials regardless of the default profile."
+                    .to_string(),
+            );
+        }
+
+        let switched = serde_json::json!({
+            "switched": true,
+            "previous_default": previous,
+            "default": args.name,
+            "written_to": outcome.path.display().to_string(),
+            "wrote_local_config": outcome.wrote_local,
+            "cleared_default_in": outcome.cleared_local.map(|p| p.display().to_string()),
+            "notes": notes,
+        });
+
+        // Report the context as it stands after the write.
+        Ok(json_result(&ctx_payload(
+            &self.reload(),
+            self.env_srv.is_some(),
+            self.env_key.is_some(),
+            Some(switched),
+        )))
+    }
+}
+
+fn load_config() -> LoadedConfig {
+    config::load_all().unwrap_or_else(|e| {
+        tracing::warn!("failed to load config: {e:#}");
+        LoadedConfig::default()
+    })
+}
+
+/// Shared `ctx` / `ctx_switch` response: the configured servers and the default one.
+fn ctx_payload(
+    loaded: &LoadedConfig,
+    env_srv_set: bool,
+    env_key_set: bool,
+    switched: Option<Value>,
+) -> Value {
+    let default = loaded.effective_default();
+    let default_name = default.map(|(name, _)| name);
+
+    let servers: Vec<Value> = loaded
+        .merged
+        .servers
+        .iter()
+        .map(|(name, p)| {
+            let is_local = loaded.is_local(name);
+            serde_json::json!({
+                "name": name,
+                "srv": p.srv,
+                "ssh": p.ssh,
+                "default": default_name == Some(name.as_str()),
+                "source": if is_local { "local" } else { "global" },
+                "defined_in": loaded.defining_path(name).map(|p| p.display().to_string()),
+                "overrides_global": is_local && loaded.global.servers.contains_key(name),
+            })
+        })
+        .collect();
+
+    let mut payload = serde_json::json!({
+        "global_config_path": loaded
+            .global_path
+            .as_ref()
+            .map(|p| p.display().to_string()),
+        "local_config_path": loaded.local_path.as_ref().map(|p| p.display().to_string()),
+        "env_srv_set": env_srv_set,
+        "env_key_set": env_key_set,
+        // Env vars outrank every profile, so the default below is not what tools use.
+        "env_credentials_take_priority": env_srv_set && env_key_set,
+        "default": default.map(|(name, explicit)| {
+            serde_json::json!({
+                "name": name,
+                // `false` = nothing is marked `default = true`; the CLI falls back to the
+                // first profile, while this server asks for an explicit `profile` instead.
+                "explicit": explicit,
+            })
+        }),
+        "servers": servers,
+    });
+
+    if let Some(switched) = switched {
+        payload["switch"] = switched;
+    }
+    payload
 }
 
 #[tool_handler]
@@ -370,10 +533,13 @@ impl ServerHandler for MikrusServer {
         .with_instructions(
             "MCP server for the mikr.us VPS API. Tools mirror the `mikrus` CLI: \
              info, servers, restart, logs, amfetamina, db, exec, stats, ports, \
-             cloud, domain, status, list_profiles. Credentials come from \
-             MIKRUS_SRV/MIKRUS_KEY env vars or `~/.mikrus`; pass `profile` to \
-             pick a specific config entry. `restart`, `exec`, `domain`, and \
-             `amfetamina` are side-effectful — confirm with the user first."
+             cloud, domain, status, list_profiles, ctx, ctx_switch. Credentials \
+             come from MIKRUS_SRV/MIKRUS_KEY env vars or `~/.mikrus`; pass \
+             `profile` to pick a specific config entry for a single call. `ctx` \
+             shows the configured servers and which one is the default, and \
+             `ctx_switch` changes that default persistently. `restart`, `exec`, \
+             `domain`, `amfetamina`, and `ctx_switch` are side-effectful — \
+             confirm with the user first."
                 .to_string(),
         )
     }
