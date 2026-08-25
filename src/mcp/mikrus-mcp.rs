@@ -92,7 +92,8 @@ impl MikrusServer {
     /// Resolve `(srv, key)` using the same priority as the CLI:
     /// 1. `MIKRUS_SRV`/`MIKRUS_KEY` env vars (both must be set)
     /// 2. Named profile from `~/.mikrus`
-    /// 3. Auto-select if `~/.mikrus` has exactly one profile
+    /// 3. Auto-select if `~/.mikrus` has exactly one profile, or one is marked
+    ///    `default = true` (see `mikrus ctx`)
     fn resolve_creds(&self, profile: Option<&str>) -> Result<(String, String), McpError> {
         if let (Some(srv), Some(key)) = (&self.env_srv, &self.env_key) {
             return Ok((srv.clone(), key.clone()));
@@ -108,6 +109,15 @@ impl MikrusServer {
         }
         if self.config.servers.len() == 1 {
             let (_, p) = self.config.servers.iter().next().unwrap();
+            return Ok((p.srv.clone(), p.key.clone()));
+        }
+        // Unlike the CLI, only an explicit `default = true` is auto-selected here —
+        // never the first profile, so a tool call can't silently hit the wrong server.
+        if let Some(p) = self
+            .config
+            .explicit_default()
+            .and_then(|name| self.config.servers.get(name))
+        {
             return Ok((p.srv.clone(), p.key.clone()));
         }
         if self.config.servers.is_empty() {
@@ -331,6 +341,7 @@ impl MikrusServer {
                     "name": name,
                     "srv": p.srv,
                     "ssh": p.ssh,
+                    "default": p.is_default(),
                 })
             })
             .collect();

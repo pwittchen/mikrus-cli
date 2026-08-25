@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use mikrus_cli::api::MikrusClient;
-use mikrus_cli::config::{Config, Profile};
+use mikrus_cli::config::{Config, LoadedConfig, Profile};
 use mikrus_cli::{config, format, status};
 
 #[derive(Parser)]
@@ -65,6 +65,11 @@ enum Command {
     },
     /// Show current configuration (profiles from ~/.mikrus, active credentials)
     Config,
+    /// List configured servers and show the default one (`ctx switch` changes it)
+    Ctx {
+        #[command(subcommand)]
+        sub: Option<CtxCommand>,
+    },
     /// Connect to the server via SSH (uses `ssh` command from profile in ~/.mikrus)
     Ssh,
     /// Show mikr.us infrastructure status (https://status.mikr.us)
@@ -97,6 +102,15 @@ enum StatsCommand {
 }
 
 #[derive(Subcommand, Debug)]
+enum CtxCommand {
+    /// Switch the default server (omit NAME to pick one interactively)
+    Switch {
+        /// Server (profile) name to make default
+        name: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum StatusCommand {
     /// Show only the user's own server status (one line per matched server)
     Short,
@@ -113,13 +127,15 @@ const ASCII_LOGO: &str = r#"
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = config::load().unwrap_or_else(|e| {
+    let loaded = config::load_all().unwrap_or_else(|e| {
         eprintln!("Warning: {e:#}");
-        Config::default()
+        LoadedConfig::default()
     });
+    let config = &loaded.merged;
+    let default_profile = loaded.effective_default().map(|(name, _)| name);
 
     let raw_args: Vec<String> = std::env::args().collect();
-    let (selected_profile, args) = config::extract_profile_arg(&raw_args, &config);
+    let (selected_profile, args) = config::extract_profile_arg(&raw_args, config);
 
     let mut cli = Cli::parse_from(args);
 
@@ -134,20 +150,30 @@ async fn main() -> Result<()> {
     };
 
     if matches!(command, Command::Config) {
-        print_config(&cli, &config, selected_profile.as_deref());
+        print_config(&cli, config, selected_profile.as_deref(), default_profile);
         return Ok(());
     }
 
+    if let Command::Ctx { sub } = &command {
+        return match sub {
+            Some(CtxCommand::Switch { name }) => run_ctx_switch(&loaded, name.as_deref()),
+            None => {
+                print_ctx(&loaded);
+                Ok(())
+            }
+        };
+    }
+
     if matches!(command, Command::Ssh) {
-        return run_ssh(&config, selected_profile.as_deref());
+        return run_ssh(config, selected_profile.as_deref(), default_profile);
     }
 
     if let Command::Status { sub } = &command {
         let short = matches!(sub, Some(StatusCommand::Short));
-        return run_status(&cli, &config, selected_profile.as_deref(), short).await;
+        return run_status(&cli, config, selected_profile.as_deref(), short).await;
     }
 
-    let (srv, key) = resolve_credentials(&cli, &config, selected_profile.as_deref())?;
+    let (srv, key) = resolve_credentials(&cli, config, selected_profile.as_deref(), default_profile)?;
 
     let client = MikrusClient::new(srv, key);
 
@@ -177,6 +203,7 @@ async fn main() -> Result<()> {
         Command::Cloud => "cloud",
         Command::Domain { .. } => "domain",
         Command::Config => unreachable!(),
+        Command::Ctx { .. } => unreachable!(),
         Command::Ssh => unreachable!(),
         Command::Status { .. } => unreachable!(),
     };
@@ -197,6 +224,7 @@ async fn main() -> Result<()> {
             client.domain(&port, domain).await
         }
         Command::Config => unreachable!(),
+        Command::Ctx { .. } => unreachable!(),
         Command::Ssh => unreachable!(),
         Command::Status { .. } => unreachable!(),
     };
@@ -227,11 +255,12 @@ async fn main() -> Result<()> {
 /// Resolve `(srv, key)` using priority:
 /// 1. `--srv`/`--key` flags or `MIKRUS_SRV`/`MIKRUS_KEY` env vars (clap already merged these)
 /// 2. Profile named as positional arg (e.g. `mikrus marek245 info`)
-/// 3. Config file has exactly one profile → auto-select it
+/// 3. Default profile (`default = true`, or the first one — see `mikrus ctx`)
 fn resolve_credentials(
     cli: &Cli,
     config: &Config,
     selected_profile: Option<&str>,
+    default_profile: Option<&str>,
 ) -> Result<(String, String)> {
     if let (Some(srv), Some(key)) = (cli.srv.clone(), cli.key.clone()) {
         return Ok((srv, key));
@@ -246,8 +275,7 @@ fn resolve_credentials(
         return Ok((srv, key));
     }
 
-    if config.servers.len() == 1 {
-        let (_, profile) = config.servers.iter().next().unwrap();
+    if let Some(profile) = default_profile.and_then(|name| config.servers.get(name)) {
         let srv = cli.srv.clone().unwrap_or_else(|| profile.srv.clone());
         let key = cli.key.clone().unwrap_or_else(|| profile.key.clone());
         return Ok((srv, key));
@@ -273,6 +301,7 @@ fn resolve_credentials(
 fn resolve_profile<'a>(
     config: &'a Config,
     selected_profile: Option<&str>,
+    default_profile: Option<&str>,
 ) -> Result<(&'a str, &'a Profile)> {
     if let Some(name) = selected_profile {
         let (key, profile) = config
@@ -281,8 +310,7 @@ fn resolve_profile<'a>(
             .ok_or_else(|| anyhow::anyhow!("Profile '{name}' not found in config file"))?;
         return Ok((key.as_str(), profile));
     }
-    if config.servers.len() == 1 {
-        let (name, profile) = config.servers.iter().next().unwrap();
+    if let Some((name, profile)) = default_profile.and_then(|n| config.servers.get_key_value(n)) {
         return Ok((name.as_str(), profile));
     }
     if config.servers.is_empty() {
@@ -295,8 +323,12 @@ fn resolve_profile<'a>(
     );
 }
 
-fn run_ssh(config: &Config, selected_profile: Option<&str>) -> Result<()> {
-    let (name, profile) = resolve_profile(config, selected_profile)?;
+fn run_ssh(
+    config: &Config,
+    selected_profile: Option<&str>,
+    default_profile: Option<&str>,
+) -> Result<()> {
+    let (name, profile) = resolve_profile(config, selected_profile, default_profile)?;
     let ssh_cmd = profile.ssh.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "No 'ssh' command defined for profile '{name}' in ~/.mikrus. \
@@ -396,7 +428,12 @@ fn collect_user_srvs(cli: &Cli, config: &Config, selected_profile: Option<&str>)
     srvs
 }
 
-fn print_config(cli: &Cli, config: &Config, selected_profile: Option<&str>) {
+fn print_config(
+    cli: &Cli,
+    config: &Config,
+    selected_profile: Option<&str>,
+    default_profile: Option<&str>,
+) {
     match config::config_path() {
         Some(p) => println!("Config file: {}", p.display()),
         None => println!("Config file: unknown (HOME not set)"),
@@ -414,13 +451,20 @@ fn print_config(cli: &Cli, config: &Config, selected_profile: Option<&str>) {
                 Some(s) => format!(", ssh=\"{s}\""),
                 None => String::new(),
             };
-            println!("  {name} -> srv={}{ssh}", profile.srv);
+            let default = if default_profile == Some(name.as_str()) {
+                " (default)"
+            } else {
+                ""
+            };
+            println!("  {name} -> srv={}{ssh}{default}", profile.srv);
         }
     }
 
     println!();
     if let Some(name) = selected_profile {
         println!("Selected profile: {name}");
+    } else if let Some(name) = default_profile {
+        println!("Default profile: {name} (change it with `mikrus ctx switch`)");
     }
     match &cli.srv {
         Some(srv) => println!("MIKRUS_SRV: {srv}"),
@@ -430,6 +474,226 @@ fn print_config(cli: &Cli, config: &Config, selected_profile: Option<&str>) {
         Some(key) => println!("MIKRUS_KEY: {key}"),
         None => println!("MIKRUS_KEY: not set"),
     }
+}
+
+/// `mikrus ctx` — list configured servers (local config first, when present) and
+/// point out which one is the default.
+fn print_ctx(loaded: &LoadedConfig) {
+    if loaded.merged.servers.is_empty() {
+        println!("No servers configured.");
+        match config::config_path() {
+            Some(p) => println!(
+                "Add a [servers.<name>] entry to {} — see `mikrus config`.",
+                p.display()
+            ),
+            None => println!("Add a [servers.<name>] entry to ~/.mikrus — see `mikrus config`."),
+        }
+        return;
+    }
+
+    let default = loaded.effective_default();
+    let default_name = default.map(|(name, _)| name);
+    let width = loaded
+        .merged
+        .servers
+        .keys()
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    if let (Some(local), Some(path)) = (&loaded.local, &loaded.local_path) {
+        println!(
+            "Local config: {} (overrides the global config)",
+            path.display()
+        );
+        for (name, profile) in &local.servers {
+            let is_default = default_name == Some(name.as_str());
+            println!("{}", format_ctx_row(name, profile, width, is_default, None));
+        }
+        println!();
+    }
+
+    match config::config_path() {
+        Some(p) => println!("Global config: {}", p.display()),
+        None => println!("Global config: unknown (HOME not set)"),
+    }
+    if loaded.global.servers.is_empty() {
+        println!("    (no servers)");
+    }
+    for (name, profile) in &loaded.global.servers {
+        let shadowed = loaded
+            .local
+            .as_ref()
+            .is_some_and(|l| l.servers.contains_key(name));
+        // A shadowed entry is never the active one — the local definition replaced it.
+        let is_default = !shadowed && default_name == Some(name.as_str());
+        let note = if shadowed {
+            Some("overridden by local config")
+        } else if profile.is_default() && !is_default {
+            Some("default = true, overridden by local config")
+        } else {
+            None
+        };
+        println!("{}", format_ctx_row(name, profile, width, is_default, note));
+    }
+
+    println!();
+    match default {
+        Some((name, true)) => println!("Default server: {name} (marked with default = true)"),
+        Some((name, false)) => println!(
+            "Default server: {name} (no server has default = true, so the first one is used)"
+        ),
+        None => println!("Default server: (none)"),
+    }
+    println!("Switch it with: mikrus ctx switch [<name>]");
+}
+
+fn format_ctx_row(
+    name: &str,
+    profile: &Profile,
+    width: usize,
+    is_default: bool,
+    note: Option<&str>,
+) -> String {
+    let marker = if is_default { "*" } else { " " };
+    let mut row = format!("  {marker} {name:<width$}  {}", profile.srv);
+    if is_default {
+        row.push_str("  (default)");
+    }
+    if let Some(note) = note {
+        row.push_str(&format!("  ({note})"));
+    }
+    row
+}
+
+/// `mikrus ctx switch [NAME]` — mark another server as the default one and persist it.
+fn run_ctx_switch(loaded: &LoadedConfig, name: Option<&str>) -> Result<()> {
+    let names: Vec<&str> = loaded.merged.servers.keys().map(|s| s.as_str()).collect();
+
+    if names.is_empty() {
+        anyhow::bail!("No servers configured — nothing to switch. Add a [servers.<name>] entry to ~/.mikrus.");
+    }
+    if names.len() == 1 {
+        println!(
+            "There's only one server configured ('{}'), so there's nothing to switch.",
+            names[0]
+        );
+        return Ok(());
+    }
+
+    let current = loaded.effective_default().map(|(name, _)| name);
+
+    let target = match name {
+        Some(name) => {
+            if !loaded.merged.servers.contains_key(name) {
+                anyhow::bail!(
+                    "Server '{name}' is not defined in the config. Available: {}",
+                    names.join(", ")
+                );
+            }
+            name.to_string()
+        }
+        None => match prompt_for_server(loaded, &names, current)? {
+            Some(name) => name,
+            None => {
+                println!("Cancelled — the default server is unchanged.");
+                return Ok(());
+            }
+        },
+    };
+
+    let path = loaded
+        .defining_path(&target)
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine the config file for '{target}'"))?
+        .to_path_buf();
+
+    if !config::write_default_flag(&path, Some(&target))? {
+        anyhow::bail!(
+            "Server '{target}' is not defined in {} — config file changed in the meantime?",
+            path.display()
+        );
+    }
+
+    let local_path = loaded.local_path.as_deref();
+    let wrote_local = local_path == Some(path.as_path());
+
+    // Marked the global file while the local one still marks another server: the local
+    // marker wins here, so clear it — otherwise the switch would have no visible effect.
+    let mut cleared_local = None;
+    if !wrote_local {
+        if let (Some(local), Some(local_path)) = (&loaded.local, local_path) {
+            if local.explicit_default().is_some() {
+                config::write_default_flag(local_path, None)?;
+                cleared_local = Some(local_path.to_path_buf());
+            }
+        }
+    }
+
+    let srv = &loaded.merged.servers[&target].srv;
+    println!("Default server switched to '{target}' ({srv}).");
+    println!("Saved in {}", path.display());
+    if wrote_local {
+        println!("This is a project-local config — the global default is unchanged.");
+    }
+    if let Some(cleared) = cleared_local {
+        println!(
+            "Removed the default marker from {} so this one applies here.",
+            cleared.display()
+        );
+    }
+    Ok(())
+}
+
+/// Interactive picker for `mikrus ctx switch` without an explicit name.
+/// Returns `None` when the user cancels with an empty line.
+fn prompt_for_server(
+    loaded: &LoadedConfig,
+    names: &[&str],
+    current: Option<&str>,
+) -> Result<Option<String>> {
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        anyhow::bail!(
+            "Not running interactively. Pass the name: mikrus ctx switch <{}>",
+            names.join("|")
+        );
+    }
+
+    let width = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
+    println!("Available servers:");
+    for (i, name) in names.iter().enumerate() {
+        let srv = &loaded.merged.servers[*name].srv;
+        let note = if current == Some(*name) {
+            "  (current default)"
+        } else {
+            ""
+        };
+        println!("  {}) {name:<width$}  {srv}{note}", i + 1);
+    }
+    print!("Select server [1-{}] (empty to cancel): ", names.len());
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
+        .context("Failed to read from stdin")?;
+    let input = line.trim();
+
+    if input.is_empty() {
+        return Ok(None);
+    }
+    if let Ok(index) = input.parse::<usize>() {
+        let name = names
+            .get(index.wrapping_sub(1))
+            .ok_or_else(|| anyhow::anyhow!("Invalid selection: {index}"))?;
+        return Ok(Some((*name).to_string()));
+    }
+    if names.contains(&input) {
+        return Ok(Some(input.to_string()));
+    }
+    anyhow::bail!(
+        "Invalid selection: '{input}'. Pick a number 1-{} or one of: {}",
+        names.len(),
+        names.join(", ")
+    );
 }
 
 #[cfg(test)]
@@ -601,6 +865,7 @@ mod tests {
                     srv: srv.to_string(),
                     key: key.to_string(),
                     ssh: None,
+                    default: None,
                 },
             );
         }
@@ -620,7 +885,7 @@ mod tests {
     fn resolve_uses_flags_first() {
         let cli = cli_with(Some("srvA"), Some("keyA"));
         let cfg = make_config(&[("marek245", "srvB", "keyB")]);
-        let (srv, key) = resolve_credentials(&cli, &cfg, Some("marek245")).unwrap();
+        let (srv, key) = resolve_credentials(&cli, &cfg, Some("marek245"), None).unwrap();
         assert_eq!(srv, "srvA");
         assert_eq!(key, "keyA");
     }
@@ -629,7 +894,7 @@ mod tests {
     fn resolve_uses_named_profile() {
         let cli = cli_with(None, None);
         let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
-        let (srv, key) = resolve_credentials(&cli, &cfg, Some("prod")).unwrap();
+        let (srv, key) = resolve_credentials(&cli, &cfg, Some("prod"), Some("marek245")).unwrap();
         assert_eq!(srv, "srvC");
         assert_eq!(key, "keyC");
     }
@@ -638,16 +903,26 @@ mod tests {
     fn resolve_auto_selects_single_profile() {
         let cli = cli_with(None, None);
         let cfg = make_config(&[("only", "srvX", "keyX")]);
-        let (srv, key) = resolve_credentials(&cli, &cfg, None).unwrap();
+        let default = cfg.effective_default().map(|(n, _)| n.to_string());
+        let (srv, key) = resolve_credentials(&cli, &cfg, None, default.as_deref()).unwrap();
         assert_eq!(srv, "srvX");
         assert_eq!(key, "keyX");
     }
 
     #[test]
-    fn resolve_errors_when_multiple_profiles_and_none_selected() {
+    fn resolve_uses_default_profile_when_none_selected() {
         let cli = cli_with(None, None);
         let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
-        let err = resolve_credentials(&cli, &cfg, None).unwrap_err();
+        let (srv, key) = resolve_credentials(&cli, &cfg, None, Some("prod")).unwrap();
+        assert_eq!(srv, "srvC");
+        assert_eq!(key, "keyC");
+    }
+
+    #[test]
+    fn resolve_errors_when_multiple_profiles_and_no_default() {
+        let cli = cli_with(None, None);
+        let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
+        let err = resolve_credentials(&cli, &cfg, None, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("marek245"), "error should list profiles: {msg}");
         assert!(msg.contains("prod"));
@@ -657,7 +932,7 @@ mod tests {
     fn resolve_errors_when_no_profile_and_no_flags() {
         let cli = cli_with(None, None);
         let cfg = Config::default();
-        let err = resolve_credentials(&cli, &cfg, None).unwrap_err();
+        let err = resolve_credentials(&cli, &cfg, None, None).unwrap_err();
         assert!(err.to_string().contains("Server name is required"));
     }
 
@@ -665,7 +940,7 @@ mod tests {
     fn resolve_errors_for_unknown_named_profile() {
         let cli = cli_with(None, None);
         let cfg = make_config(&[("marek245", "srvB", "keyB")]);
-        let err = resolve_credentials(&cli, &cfg, Some("ghost")).unwrap_err();
+        let err = resolve_credentials(&cli, &cfg, Some("ghost"), None).unwrap_err();
         assert!(err.to_string().contains("ghost"));
     }
 
@@ -721,7 +996,7 @@ mod tests {
     #[test]
     fn resolve_profile_uses_named() {
         let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
-        let (name, profile) = resolve_profile(&cfg, Some("prod")).unwrap();
+        let (name, profile) = resolve_profile(&cfg, Some("prod"), Some("marek245")).unwrap();
         assert_eq!(name, "prod");
         assert_eq!(profile.srv, "srvC");
     }
@@ -729,21 +1004,76 @@ mod tests {
     #[test]
     fn resolve_profile_auto_selects_single() {
         let cfg = make_config(&[("only", "srvX", "keyX")]);
-        let (name, _) = resolve_profile(&cfg, None).unwrap();
+        let default = cfg.effective_default().map(|(n, _)| n.to_string());
+        let (name, _) = resolve_profile(&cfg, None, default.as_deref()).unwrap();
         assert_eq!(name, "only");
     }
 
     #[test]
-    fn resolve_profile_errors_when_multiple_and_none_selected() {
+    fn resolve_profile_uses_default_when_none_selected() {
         let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
-        let err = resolve_profile(&cfg, None).unwrap_err();
+        let (name, profile) = resolve_profile(&cfg, None, Some("prod")).unwrap();
+        assert_eq!(name, "prod");
+        assert_eq!(profile.srv, "srvC");
+    }
+
+    #[test]
+    fn resolve_profile_errors_when_multiple_and_no_default() {
+        let cfg = make_config(&[("marek245", "srvB", "keyB"), ("prod", "srvC", "keyC")]);
+        let err = resolve_profile(&cfg, None, None).unwrap_err();
         assert!(err.to_string().contains("Multiple profiles"));
     }
 
     #[test]
     fn resolve_profile_errors_when_empty() {
         let cfg = Config::default();
-        let err = resolve_profile(&cfg, None).unwrap_err();
+        let err = resolve_profile(&cfg, None, None).unwrap_err();
         assert!(err.to_string().contains("No profiles"));
+    }
+
+    #[test]
+    fn test_parse_ctx_command() {
+        let cli = Cli::parse_from(["mikrus", "ctx"]);
+        assert!(matches!(cli.command, Some(Command::Ctx { sub: None })));
+    }
+
+    #[test]
+    fn test_parse_ctx_switch_without_name() {
+        let cli = Cli::parse_from(["mikrus", "ctx", "switch"]);
+        match cli.command {
+            Some(Command::Ctx { sub }) => {
+                assert!(matches!(sub, Some(CtxCommand::Switch { name: None })));
+            }
+            _ => panic!("expected Ctx command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ctx_switch_with_name() {
+        let cli = Cli::parse_from(["mikrus", "ctx", "switch", "prod"]);
+        match cli.command {
+            Some(Command::Ctx {
+                sub: Some(CtxCommand::Switch { name }),
+            }) => assert_eq!(name.unwrap(), "prod"),
+            _ => panic!("expected Ctx switch command"),
+        }
+    }
+
+    #[test]
+    fn ctx_row_marks_the_default_server() {
+        let cfg = make_config(&[("prod", "srv67890", "k")]);
+        let row = format_ctx_row("prod", &cfg.servers["prod"], 8, true, None);
+        assert!(row.starts_with("  * prod"), "row: {row}");
+        assert!(row.contains("srv67890"));
+        assert!(row.contains("(default)"));
+    }
+
+    #[test]
+    fn ctx_row_renders_note_for_non_default_server() {
+        let cfg = make_config(&[("prod", "srv67890", "k")]);
+        let row = format_ctx_row("prod", &cfg.servers["prod"], 8, false, Some("overridden"));
+        assert!(row.starts_with("    prod"), "row: {row}");
+        assert!(!row.contains("(default)"));
+        assert!(row.contains("(overridden)"));
     }
 }

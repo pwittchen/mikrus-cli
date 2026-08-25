@@ -25,12 +25,14 @@ Credentials are resolved in this order (highest first):
 1. `--srv`/`--key` flags, or `MIKRUS_SRV`/`MIKRUS_KEY` env vars
 2. Named profile from `~/.mikrus` passed as first positional arg
    (`mikrus marek245 info`)
-3. Auto-selected profile when `~/.mikrus` contains exactly one entry
+3. Default profile — the one marked `default = true` in `~/.mikrus`, or the
+   first one when nothing is marked (a single entry is therefore auto-selected)
 
-If you are not sure which profile to use, run `mikrus config` first — it prints
-the config file path, configured profiles, and currently active credentials.
-When the config file has multiple profiles and the user hasn't specified one,
-ask which profile to target rather than guessing.
+If you are not sure which profile to use, run `mikrus ctx` first — it lists the
+configured servers and says which one is the default. `mikrus config` adds the
+config file paths and currently active credentials. When the config file has
+multiple profiles and the user hasn't specified one, ask which profile to
+target rather than relying on the default.
 
 ## Commands
 
@@ -51,6 +53,8 @@ ask which profile to target rather than guessing.
 | `cloud` | Cloud services & stats |
 | `domain <PORT> [DOMAIN]` | Assign domain to a port — omit DOMAIN for auto-assignment. Available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re` |
 | `config` | Show config path, profiles, active credentials |
+| `ctx` | List configured servers (project-local `.mikrus` first) and show the default one |
+| `ctx switch [NAME]` | Make another server the default, saved as `default = true` in the config file. Without NAME it prompts interactively — always pass NAME when running it non-interactively. |
 | `ssh` | SSH into the server (uses optional `ssh` field from the active profile) |
 | `status` | mikr.us infrastructure status from `status.mikr.us` — colored dots per monitor. Auto-detects the user's hosting server by reading the `<h1>` of `<srv>.mikrus.xyz`, prints a `Your server: srvNN.mikr.us (<user_srv>)` header, and marks the matching monitor with `→`. Status page itself needs no auth; the host lookup uses no credentials either. |
 | `status short` | One line per matched user server (e.g. `● srv30  up`); skips the full grid. Best when the user just wants to know if their VPS is up. |

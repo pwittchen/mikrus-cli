@@ -39,7 +39,8 @@ Credentials can come from any of three sources (highest priority first):
 
 1. **CLI flags / env vars** — `--srv`/`--key` or `MIKRUS_SRV`/`MIKRUS_KEY`
 2. **Named profile** from the config file — passed as the first argument (e.g. `mikrus marek245 info`)
-3. **Auto-selected profile** — when the config file contains exactly one profile
+3. **Default profile** — the one marked `default = true`, or the first one when
+   nothing is marked (see [Default server (`ctx`)](#default-server-ctx))
 
 Profiles are read from `~/.mikrus` and, if present, from `.mikrus` in the
 current directory, which overrides the global one — see
@@ -67,6 +68,7 @@ ssh = "ssh root@srv12345.mikr.us -p 12345"  # optional, enables `mikrus ssh`
 [servers.prod]
 srv = "srv67890"
 key = "another-api-key"
+default = true  # optional, marks the default server — see `mikrus ctx`
 ```
 
 The `ssh` field is optional. When present, `mikrus ssh` (or
@@ -74,7 +76,8 @@ The `ssh` field is optional. When present, `mikrus ssh` (or
 ports, or identity files you put in the string are honored.
 
 If only one profile is defined, commands run against it automatically. With
-multiple profiles, pass the profile name as the first argument:
+multiple profiles, commands run against the default one, and you can override
+that per command by passing the profile name as the first argument:
 
 ```bash
 mikrus marek245 info
@@ -84,13 +87,51 @@ mikrus prod stats short
 Run `mikrus config` to see the config file paths, configured profiles, and
 currently active credentials.
 
+### Default server (`ctx`)
+
+`mikrus ctx` lists the configured servers and shows which one commands use when
+no profile is named:
+
+```
+$ mikrus ctx
+Global config: /home/you/.mikrus
+    marek245  srv12345
+  * prod      srv67890  (default)
+
+Default server: prod (marked with default = true)
+Switch it with: mikrus ctx switch [<name>]
+```
+
+The default is the profile with `default = true`. Only one profile should carry
+that flag — `mikrus ctx switch` maintains that. When no profile is marked, the
+first one in the list is used and `ctx` says so.
+
+`mikrus ctx switch <name>` makes another server the default and writes
+`default = true` into the config file that defines it (comments and formatting
+are preserved). Without a name it prints a numbered list and asks which one to
+pick:
+
+```bash
+mikrus ctx switch prod   # switch directly
+mikrus ctx switch        # pick interactively
+```
+
+With only one server configured there is nothing to switch, and `ctx switch`
+says so instead of changing anything.
+
+When a project-local `.mikrus` exists, `mikrus ctx` prints it first (it
+overrides the global config) and marks global entries it shadows. Switching to a
+server defined locally writes the flag into the local file only, so the global
+default stays untouched for other directories; a `default = true` in the local
+file wins over the global one.
+
 ### Local config file (per project)
 
 If a `.mikrus` file exists in the current working directory, it is loaded on top
 of the global `~/.mikrus`. Profiles are merged by name:
 
 - a profile defined locally **overrides** the global profile with the same name
-  (the whole entry is replaced — `srv`, `key` and `ssh`),
+  (the whole entry is replaced — `srv`, `key`, `ssh` and `default`),
 - profiles that exist only globally are still available,
 - profiles that exist only locally are added.
 
@@ -133,6 +174,8 @@ Use `--json` to output raw JSON instead of formatted text.
 | `cloud` | Show cloud services & stats |
 | `domain <PORT> [DOMAIN]` | Assign domain to server (omit domain for auto-assignment; available: `*.tojest.dev`, `*.bieda.it`, `*.toadres.pl`, `*.byst.re`) |
 | `config` | Show config file path, configured profiles, and active credentials |
+| `ctx` | List configured servers (project-local config first) and show which one is the default |
+| `ctx switch [NAME]` | Make another server the default and save it in the config file (omit NAME to pick interactively; with one server there's nothing to switch) |
 | `ssh` | Connect to the server via SSH (uses optional `ssh` field from profile in `~/.mikrus`) |
 | `status` | Show mikr.us infrastructure status from [status.mikr.us](https://status.mikr.us/status/mikrus) — colored dots per monitor (green=up, red=down, yellow=pending, blue=maintenance, gray=unknown). Your hosting server is auto-detected by reading the `<h1>` of `<srv>.mikrus.xyz` (e.g. `srv30.mikr.us`); a `Your server: …` header is printed and the matching monitor is marked with `→` |
 | `status short` | Print one line per matched user server (e.g. `● srv30  up`) — skips the full grid |
@@ -178,7 +221,10 @@ your mikr.us VPS through it.
 Tools that talk to the authenticated API accept an optional `profile` argument
 naming an entry in `~/.mikrus`. Credentials are resolved with the same priority
 as the CLI: `MIKRUS_SRV`/`MIKRUS_KEY` env vars first, then the named profile,
-then the only profile if there's exactly one configured.
+then the only profile if there's exactly one configured, then the profile marked
+`default = true`. Unlike the CLI, the server never falls back to the *first*
+profile — with several unmarked profiles it asks for the `profile` argument
+instead of guessing.
 
 ### Adding to Claude Code
 

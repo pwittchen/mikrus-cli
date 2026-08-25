@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const CONFIG_FILENAME: &str = ".mikrus";
 
@@ -17,6 +17,74 @@ pub struct Profile {
     pub key: String,
     #[serde(default)]
     pub ssh: Option<String>,
+    /// Marks this profile as the default one. At most one profile per file should set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<bool>,
+}
+
+impl Profile {
+    pub fn is_default(&self) -> bool {
+        self.default.unwrap_or(false)
+    }
+}
+
+impl Config {
+    /// Name of the profile explicitly marked with `default = true`
+    /// (the first one, in name order, if several are marked).
+    pub fn explicit_default(&self) -> Option<&str> {
+        self.servers
+            .iter()
+            .find(|(_, p)| p.is_default())
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// The profile that commands run against when none is named: the one marked
+    /// `default = true`, or — when nothing is marked — the first one in the list.
+    /// The bool tells which of the two it is (`true` = explicitly marked).
+    pub fn effective_default(&self) -> Option<(&str, bool)> {
+        if let Some(name) = self.explicit_default() {
+            return Some((name, true));
+        }
+        self.servers.keys().next().map(|name| (name.as_str(), false))
+    }
+}
+
+/// Global config, project-local config, and the merged result, kept apart so that
+/// `mikrus ctx` can tell where each profile came from.
+#[derive(Debug, Default)]
+pub struct LoadedConfig {
+    /// `~/.mikrus` merged with `./.mikrus` — what commands actually use.
+    pub merged: Config,
+    pub global: Config,
+    pub global_path: Option<PathBuf>,
+    pub local: Option<Config>,
+    pub local_path: Option<PathBuf>,
+}
+
+impl LoadedConfig {
+    /// Effective default profile of the merged config. A `default = true` in the
+    /// project-local file wins over one in the global file.
+    pub fn effective_default(&self) -> Option<(&str, bool)> {
+        if let Some(local) = &self.local {
+            if let Some(name) = local.explicit_default() {
+                if let Some((name, _)) = self.merged.servers.get_key_value(name) {
+                    return Some((name.as_str(), true));
+                }
+            }
+        }
+        self.merged.effective_default()
+    }
+
+    /// File that defines `name`: the local config when it has an entry for it,
+    /// the global one otherwise.
+    pub fn defining_path(&self, name: &str) -> Option<&Path> {
+        if let (Some(local), Some(path)) = (&self.local, &self.local_path) {
+            if local.servers.contains_key(name) {
+                return Some(path.as_path());
+            }
+        }
+        self.global_path.as_deref()
+    }
 }
 
 /// Global config file: `~/.mikrus`.
@@ -41,15 +109,75 @@ pub fn local_config_path() -> Option<PathBuf> {
 /// A profile defined in the local file replaces the global profile of the same name;
 /// profiles that only exist globally are kept.
 pub fn load() -> Result<Config> {
-    let mut config = match config_path() {
-        Some(path) => read_config(&path)?,
+    Ok(load_all()?.merged)
+}
+
+/// Same as [`load`], but keeps the global and project-local configs separately
+/// alongside the merged result.
+pub fn load_all() -> Result<LoadedConfig> {
+    let global_path = config_path();
+    let global = match &global_path {
+        Some(path) => read_config(path)?,
         None => Config::default(),
     };
-    if let Some(path) = local_config_path() {
-        let local = read_config(&path)?;
-        merge(&mut config, local);
+    let local_path = local_config_path();
+    let local = match &local_path {
+        Some(path) => Some(read_config(path)?),
+        None => None,
+    };
+
+    let mut merged = Config {
+        servers: global.servers.clone(),
+    };
+    if let Some(local) = &local {
+        merge(
+            &mut merged,
+            Config {
+                servers: local.servers.clone(),
+            },
+        );
     }
-    Ok(config)
+
+    Ok(LoadedConfig {
+        merged,
+        global,
+        global_path,
+        local,
+        local_path,
+    })
+}
+
+/// Rewrites `path` so that only `default_name` carries `default = true`; the key is
+/// removed from every other profile. Comments and formatting are preserved.
+/// Returns whether the file actually contains a profile named `default_name`.
+pub fn write_default_flag(path: &Path, default_name: Option<&str>) -> Result<bool> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file {}", path.display()))?;
+    let mut doc: toml_edit::DocumentMut = contents
+        .parse()
+        .with_context(|| format!("Failed to parse config file {}", path.display()))?;
+
+    let mut found = false;
+    if let Some(servers) = doc
+        .get_mut("servers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        for (name, item) in servers.iter_mut() {
+            let Some(profile) = item.as_table_like_mut() else {
+                continue;
+            };
+            if default_name == Some(name.get()) {
+                profile.insert("default", toml_edit::value(true));
+                found = true;
+            } else {
+                profile.remove("default");
+            }
+        }
+    }
+
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("Failed to write config file {}", path.display()))?;
+    Ok(found)
 }
 
 /// Merges `local` into `global`, with local profiles taking precedence.
@@ -126,6 +254,7 @@ mod tests {
                 srv: "srv12345".to_string(),
                 key: "abc".to_string(),
                 ssh: None,
+                default: None,
             },
         );
         servers.insert(
@@ -134,6 +263,7 @@ mod tests {
                 srv: "srv67890".to_string(),
                 key: "def".to_string(),
                 ssh: None,
+                default: None,
             },
         );
         Config { servers }
@@ -256,5 +386,165 @@ ssh = "ssh root@example.com -p 12345"
             cfg.servers["prod"].ssh.as_deref(),
             Some("ssh root@example.com -p 12345")
         );
+    }
+
+    #[test]
+    fn parse_default_flag() {
+        let src = r#"
+[servers.marek245]
+srv = "srv12345"
+key = "abc"
+
+[servers.prod]
+srv = "srv67890"
+key = "def"
+default = true
+"#;
+        let cfg: Config = toml::from_str(src).unwrap();
+        assert!(!cfg.servers["marek245"].is_default());
+        assert!(cfg.servers["prod"].is_default());
+        assert_eq!(cfg.explicit_default(), Some("prod"));
+        assert_eq!(cfg.effective_default(), Some(("prod", true)));
+    }
+
+    #[test]
+    fn effective_default_falls_back_to_first_profile() {
+        let cfg = sample_config();
+        assert!(cfg.explicit_default().is_none());
+        // BTreeMap keeps profiles in name order, so "marek245" comes first.
+        assert_eq!(cfg.effective_default(), Some(("marek245", false)));
+    }
+
+    #[test]
+    fn effective_default_is_none_for_empty_config() {
+        assert!(Config::default().effective_default().is_none());
+    }
+
+    fn loaded(global_src: &str, local_src: Option<&str>) -> LoadedConfig {
+        let global: Config = toml::from_str(global_src).unwrap();
+        let local: Option<Config> = local_src.map(|s| toml::from_str(s).unwrap());
+        let mut merged = Config {
+            servers: global.servers.clone(),
+        };
+        if let Some(local) = &local {
+            merge(
+                &mut merged,
+                Config {
+                    servers: local.servers.clone(),
+                },
+            );
+        }
+        LoadedConfig {
+            merged,
+            global,
+            global_path: Some(PathBuf::from("/home/u/.mikrus")),
+            local,
+            local_path: local_src.map(|_| PathBuf::from("/proj/.mikrus")),
+        }
+    }
+
+    const GLOBAL_SRC: &str = r#"
+[servers.marek245]
+srv = "srv12345"
+key = "abc"
+
+[servers.prod]
+srv = "srv67890"
+key = "def"
+default = true
+"#;
+
+    #[test]
+    fn local_default_wins_over_global_default() {
+        let cfg = loaded(
+            GLOBAL_SRC,
+            Some(
+                r#"
+[servers.staging]
+srv = "srv11111"
+key = "ghi"
+default = true
+"#,
+            ),
+        );
+        assert_eq!(cfg.effective_default(), Some(("staging", true)));
+    }
+
+    #[test]
+    fn global_default_used_when_local_marks_none() {
+        let cfg = loaded(
+            GLOBAL_SRC,
+            Some(
+                r#"
+[servers.staging]
+srv = "srv11111"
+key = "ghi"
+"#,
+            ),
+        );
+        assert_eq!(cfg.effective_default(), Some(("prod", true)));
+    }
+
+    #[test]
+    fn defining_path_prefers_local_file() {
+        let cfg = loaded(
+            GLOBAL_SRC,
+            Some(
+                r#"
+[servers.prod]
+srv = "srv99999"
+key = "local"
+"#,
+            ),
+        );
+        assert_eq!(cfg.defining_path("prod").unwrap(), Path::new("/proj/.mikrus"));
+        assert_eq!(
+            cfg.defining_path("marek245").unwrap(),
+            Path::new("/home/u/.mikrus")
+        );
+    }
+
+    #[test]
+    fn write_default_flag_moves_the_marker_and_keeps_comments() {
+        let dir = std::env::temp_dir().join(format!(
+            "mikrus-cli-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".mikrus");
+        std::fs::write(
+            &path,
+            r#"# my servers
+[servers.marek245]
+srv = "srv12345" # main box
+key = "abc"
+
+[servers.prod]
+srv = "srv67890"
+key = "def"
+default = true
+"#,
+        )
+        .unwrap();
+
+        assert!(write_default_flag(&path, Some("marek245")).unwrap());
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("# my servers"), "comments lost: {written}");
+        assert!(written.contains("# main box"));
+        let cfg: Config = toml::from_str(&written).unwrap();
+        assert_eq!(cfg.explicit_default(), Some("marek245"));
+        assert!(!cfg.servers["prod"].is_default());
+
+        // Clearing every marker.
+        assert!(!write_default_flag(&path, None).unwrap());
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(cfg.explicit_default().is_none());
+
+        // Unknown profile name → nothing marked, reported as not found.
+        assert!(!write_default_flag(&path, Some("ghost")).unwrap());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
