@@ -641,7 +641,7 @@ fn prompt_for_server(
         .and_then(|c| names.iter().position(|name| *name == c))
         .unwrap_or(0);
 
-    let selection = dialoguer::Select::new()
+    let selection = dialoguer::Select::with_theme(&GreenArrowTheme)
         .with_prompt("Select the default server (↑/↓ to move, Enter to confirm, Esc to cancel)")
         .items(&items)
         .default(start)
@@ -655,6 +655,25 @@ fn prompt_for_server(
     };
 
     Ok(selection.map(|index| names[index].to_string()))
+}
+
+/// Marks the highlighted menu entry with a green arrow instead of dialoguer's `>`.
+struct GreenArrowTheme;
+
+impl dialoguer::theme::Theme for GreenArrowTheme {
+    fn format_select_prompt_item(
+        &self,
+        f: &mut dyn std::fmt::Write,
+        text: &str,
+        active: bool,
+    ) -> std::fmt::Result {
+        if active {
+            // Green arrow, then reset so the entry itself keeps the terminal colours.
+            write!(f, "\x1b[32m\u{2192}\x1b[0m {text}")
+        } else {
+            write!(f, "  {text}")
+        }
+    }
 }
 
 /// One menu line per server: name, srv, and a marker on the current default.
