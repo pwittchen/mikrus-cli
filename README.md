@@ -2,6 +2,8 @@
 
 [mikrus](https://mikr.us/) VPS CLI written in Rust
 
+![mikrus-cli](screenshot.png)
+
 ## Installation
 
 ### Prerequisites
